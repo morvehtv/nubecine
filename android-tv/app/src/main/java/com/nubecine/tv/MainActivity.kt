@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.UiModeManager
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
@@ -27,6 +28,8 @@ import android.widget.EditText
  * (flechas, OK, Atrás, Play/Pausa, Avance/Retroceso).
  */
 class MainActivity : Activity() {
+
+    private companion object { const val REQ_PLAYER = 42 }
 
     private var web: WebView? = null
     private val isTv by lazy {
@@ -140,6 +143,37 @@ class MainActivity : Activity() {
         @JavascriptInterface fun changeServer() = runOnUiThread { this@MainActivity.changeServer() }
         @JavascriptInterface fun version(): String = BuildConfig.VERSION_NAME
         @JavascriptInterface fun isTV(): Boolean = isTv
+        @JavascriptInterface fun hasNativePlayer(): Boolean = true
+
+        /** Abre el reproductor nativo (ExoPlayer) a pantalla completa. */
+        @JavascriptInterface
+        fun play(url: String, title: String, startSec: Double, subsJson: String, fileId: String) = runOnUiThread {
+            val u = Uri.parse(url)
+            val base = u.scheme + "://" + u.authority
+            val i = Intent(this@MainActivity, PlayerActivity::class.java)
+                .putExtra(PlayerActivity.EXTRA_URL, url)
+                .putExtra(PlayerActivity.EXTRA_BASE, base)
+                .putExtra(PlayerActivity.EXTRA_TITLE, title)
+                .putExtra(PlayerActivity.EXTRA_START_MS, (startSec * 1000).toLong())
+                .putExtra(PlayerActivity.EXTRA_SUBS, subsJson)
+                .putExtra(PlayerActivity.EXTRA_FILE_ID, fileId)
+            CookieManager.getInstance().flush()
+            @Suppress("DEPRECATION")
+            startActivityForResult(i, REQ_PLAYER)
+        }
+    }
+
+    // ---------- Vuelta del reproductor nativo: la web guarda el progreso y muestra la ficha ----------
+    @Deprecated("Activity result API clásica")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_PLAYER || data == null) return
+        val fileId = (data.getStringExtra(PlayerActivity.EXTRA_FILE_ID) ?: "").replace("'", "")
+        val pos = data.getDoubleExtra(PlayerActivity.RESULT_POS, 0.0)
+        val dur = data.getDoubleExtra(PlayerActivity.RESULT_DUR, 0.0)
+        web?.evaluateJavascript("window.onNativePlayerClosed && window.onNativePlayerClosed('$fileId', $pos, $dur)", null)
+        web?.requestFocus()
     }
 
     // ---------- Botón Atrás del mando ----------

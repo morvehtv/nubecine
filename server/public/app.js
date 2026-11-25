@@ -387,9 +387,89 @@ async function renderTitle(id) {
   autofocus('#play');
 }
 
+// ---------------- Reproductores nativos ----------------
+// App Android (TV y móvil): ExoPlayer a pantalla completa.
+// iPhone: reproductor de iOS a pantalla completa.
+// Al salir de cualquiera de los dos se guarda el progreso y se muestra la ficha.
+const hasNative = () => !!(window.NubeTV && window.NubeTV.hasNativePlayer && window.NubeTV.play);
+const isIPhone = /iPhone|iPod/.test(navigator.userAgent);
+const resumeAt = (p) => (p && p.t > 15 && p.d && p.t / p.d < 0.93 ? p.t - 3 : 0);
+const playLabel = (info) => info.title + (info.type === 'series' ? ` · T${info.season}:E${info.episode}${info.episodeName ? ' · ' + info.episodeName : ''}` : '');
+function showTitle(titleId) {
+  const here = location.hash === '#/t/' + titleId;
+  if (here) render(); else go('/t/' + titleId);
+}
+
+async function playNativeAndroid(fileId) {
+  try {
+    const info = await api('/api/play/' + fileId);
+    let pref = 'es'; try { pref = localStorage.getItem('subLang') || 'es'; } catch {}
+    const subs = [...(info.subs || [])].sort((a, b) => (b.lang === pref) - (a.lang === pref))
+      .map((s) => ({ url: location.origin + '/sub/' + s.fileId, lang: s.lang, label: s.label }));
+    window.NubeTV.play(location.origin + '/stream/' + fileId, playLabel(info), resumeAt(info.progress), JSON.stringify(pref === 'off' ? [] : subs), fileId);
+    state.nativeTitle = info.titleId;
+    if (location.hash !== '#/t/' + info.titleId) setTimeout(() => go('/t/' + info.titleId), 300);
+  } catch (e) { if (e.message !== 'auth') toast(e.message); }
+}
+window.onNativePlayerClosed = async (fileId, t, d) => {
+  if (d > 0) { try { await api('/api/progress', { method: 'POST', body: { fileId, t, d } }); } catch {} }
+  if (state.nativeTitle) showTitle(state.nativeTitle);
+};
+
+function playIPhone(fileId) {
+  // Se crea y reproduce dentro del mismo toque: así iOS abre su reproductor a pantalla completa
+  $('#ios-video')?.remove();
+  const v = document.createElement('video');
+  v.id = 'ios-video'; v.preload = 'auto'; v.src = '/stream/' + fileId;
+  v.setAttribute('x-webkit-airplay', 'allow');
+  v.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
+  document.body.appendChild(v);
+  v.play().catch(() => {});
+  let info = null, lastSave = 0, closed = false;
+  const save = () => { if (v.duration && isFinite(v.duration)) { lastSave = Date.now(); api('/api/progress', { method: 'POST', body: { fileId, t: v.currentTime, d: v.duration }, keepalive: true }).catch(() => {}); } };
+  const close = () => {
+    if (closed) return; closed = true;
+    save(); v.pause(); setTimeout(() => v.remove(), 500);
+    if (info) showTitle(info.titleId);
+  };
+  api('/api/play/' + fileId).then((i) => {
+    info = i;
+    for (const s of i.subs || []) {
+      const tr = document.createElement('track');
+      tr.kind = 'subtitles'; tr.src = '/sub/' + s.fileId; tr.srclang = s.lang; tr.label = s.label;
+      if (s.lang === 'es') tr.default = true;
+      v.appendChild(tr);
+    }
+    const start = resumeAt(i.progress);
+    if (start) { if (v.readyState >= 1) v.currentTime = start; else v.addEventListener('loadedmetadata', () => { v.currentTime = start; }, { once: true }); }
+  }).catch(() => {});
+  v.addEventListener('timeupdate', () => { if (Date.now() - lastSave > 10000) save(); });
+  v.addEventListener('pause', save);
+  v.addEventListener('webkitendfullscreen', close);
+  v.addEventListener('ended', () => { try { v.webkitExitFullscreen(); } catch {} close(); });
+  v.addEventListener('error', () => { toast('No se pudo reproducir el vídeo. Usa MP4 (H.264/AAC).'); close(); });
+}
+
+// Cualquier enlace "Reproducir/Continuar" abre el reproductor nativo cuando lo hay
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a[href^="#/ver/"]');
+  if (!a || (!hasNative() && !isIPhone)) return;
+  e.preventDefault(); e.stopPropagation();
+  const fileId = decodeURIComponent(a.getAttribute('href').slice(6));
+  if (hasNative()) playNativeAndroid(fileId); else playIPhone(fileId);
+}, true);
+
 // ---------------- Reproductor ----------------
 async function renderPlayer(fileId) {
+  if (hasNative()) { location.replace('#/'); return playNativeAndroid(fileId); }
   const info = await api('/api/play/' + fileId);
+  if (isIPhone) {
+    // En iPhone hace falta un toque para abrir el reproductor del sistema
+    app.innerHTML = `<div class="page"><h1>${esc(playLabel(info))}</h1>
+      <div class="actions"><button class="btn primary focusable" id="ios-play">${ICON.play}Reproducir</button><a class="btn focusable" href="#/t/${esc(info.titleId)}">Volver</a></div></div>`;
+    $('#ios-play').onclick = () => playIPhone(fileId);
+    return;
+  }
   const sub = info.type === 'series' ? `T${info.season} · E${info.episode}${info.episodeName ? ' — ' + info.episodeName : ''}` : '';
   app.innerHTML = `<div class="player">
     <video id="v" preload="auto" playsinline autoplay src="/stream/${esc(fileId)}">
