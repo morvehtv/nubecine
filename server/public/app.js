@@ -22,6 +22,7 @@ const ICON = {
   back10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><text x="12" y="15.5" font-size="7.5" text-anchor="middle" fill="currentColor" stroke="none" font-weight="700">10</text></svg>',
   fwd10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/><text x="12" y="15.5" font-size="7.5" text-anchor="middle" fill="currentColor" stroke="none" font-weight="700">10</text></svg>',
   audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
+  restart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></svg>',
   cc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 10.5a2 2 0 1 0 0 3M17 10.5a2 2 0 1 0 0 3" stroke-linecap="round"/></svg>',
   full: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
   next: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5.5v13a1 1 0 0 0 1.5.86L16 13.5V18a1 1 0 0 0 2 0V6a1 1 0 0 0-2 0v4.5L6.5 4.64A1 1 0 0 0 5 5.5z"/></svg>',
@@ -418,8 +419,8 @@ async function renderSearch() {
 // ---------------- Ficha ----------------
 async function renderTitle(id) {
   const t = await api('/api/title/' + id);
-  let playFile = t.fileId, playLabel = 'Reproducir', season = t.seasons?.[0]?.season;
-  if (t.type === 'movie' && t.progress && t.progress.t > 30 && t.progress.t / t.progress.d < 0.93) playLabel = 'Continuar · ' + fmtTime(t.progress.d - t.progress.t) + ' restantes';
+  let playFile = t.fileId, playLabel = 'Reproducir', season = t.seasons?.[0]?.season, started = false;
+  if (t.type === 'movie' && t.progress && t.progress.t > 30 && t.progress.t / t.progress.d < 0.93) { playLabel = 'Continuar · ' + fmtTime(t.progress.d - t.progress.t) + ' restantes'; started = true; }
   if (t.type === 'series') {
     const eps = t.seasons.flatMap((s) => s.episodes);
     const watched = eps.filter((e) => e.progress).sort((a, b) => b.progress.at - a.progress.at)[0];
@@ -429,11 +430,13 @@ async function renderTitle(id) {
       target = done ? eps[eps.indexOf(watched) + 1] || watched : watched;
     }
     playFile = target.fileId; season = target.season;
+    started = !!(target.progress && target.progress.t > 30 && target.progress.t / (target.progress.d || 1) < 0.93);
     playLabel = t.saga ? (watched ? 'Continuar: ' : 'Ver: ') + (target.name || 'Película ' + target.episode)
       : (watched ? 'Continuar' : 'Ver') + ` T${target.season}:E${target.episode}`;
   }
   app.innerHTML = `<div class="detail">${heroHTML(t, `
       <a class="btn primary focusable" id="play" href="#/ver/${playFile}">${ICON.play}${esc(playLabel)}</a>
+      ${started ? `<a class="btn focusable" id="restart" href="#/ver/${playFile}" data-start="0">${ICON.restart}Desde el principio</a>` : ''}
       <button class="btn focusable" id="mylist">${t.inList ? ICON.check + 'En mi lista' : ICON.plus + 'Mi lista'}</button>
       ${state.me.admin ? `<a class="btn ghost focusable" href="#/admin/contenido?edit=${t.id}">Editar</a>` : ''}`)}
     <div class="detail-body">${t.type === 'series' ? `<div>
@@ -490,7 +493,10 @@ function selectAudio(v, info) {
 // La app de Android usa el reproductor web (ExoPlayer desincronizaba el audio en algunos vídeos)
 const hasNative = () => false;
 const isIPhone = /iPhone|iPod/.test(navigator.userAgent);
-const resumeAt = (p) => (p && p.t > 15 && p.d && p.t / p.d < 0.93 ? p.t - 3 : 0);
+const resumeAt = (p) => {
+  if (state.fromStart) { state.fromStart = false; return 0; }
+  return p && p.t > 15 && p.d && p.t / p.d < 0.93 ? p.t - 3 : 0;
+};
 const playLabel = (info) => info.saga ? (info.episodeName || info.title) : info.title + (info.type === 'series' ? ` · T${info.season}:E${info.episode}${info.episodeName ? ' · ' + info.episodeName : ''}` : '');
 function showTitle(titleId) {
   const here = location.hash === '#/t/' + titleId;
@@ -552,6 +558,12 @@ function playIPhone(fileId) {
   v.addEventListener('error', () => { toast('No se pudo reproducir el vídeo. Usa MP4 (H.264/AAC).'); close(); });
 }
 
+// "Desde el principio": el siguiente vídeo que se abra no reanuda
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a[href^="#/ver/"]');
+  if (a) state.fromStart = a.dataset.start === '0';
+}, true);
+
 // Cualquier enlace "Reproducir/Continuar" abre el reproductor nativo cuando lo hay
 document.addEventListener('click', (e) => {
   const a = e.target.closest && e.target.closest('a[href^="#/ver/"]');
@@ -592,6 +604,7 @@ async function renderPlayer(fileId) {
           <button class="icon-btn focusable" id="p-play" aria-label="Reproducir/Pausar">${ICON.pause}</button>
           <button class="icon-btn focusable" id="p-rew" aria-label="Retroceder 10 segundos">${ICON.back10}</button>
           <button class="icon-btn focusable" id="p-fwd" aria-label="Avanzar 10 segundos">${ICON.fwd10}</button>
+          <button class="icon-btn focusable" id="p-restart" aria-label="Desde el principio" title="Desde el principio">${ICON.restart}</button>
           <span class="time" id="time">0:00 / 0:00</span>
           ${info.next ? `<button class="btn small focusable" id="p-next">${ICON.next} Siguiente</button>` : ''}
           ${(info.audio || []).length > 1 ? `<button class="icon-btn focusable" id="p-audio" aria-label="Idioma del audio">${ICON.audio}</button>` : ''}
@@ -690,7 +703,7 @@ async function renderPlayer(fileId) {
     let pref = 'es'; try { pref = localStorage.getItem('subLang') || 'es'; } catch {}
     setSub(pref === 'off' ? -1 : (info.subs || []).findIndex((s) => s.lang === pref));
     const p = info.progress;
-    const startAt = p && p.t > 15 && p.d && p.t / p.d < 0.93 ? p.t - 3 : 0;
+    const startAt = resumeAt(p);
     if (startAt) toast('Reanudando desde ' + fmtTime(p.t));
     // Audio en castellano: Safari cambia la pista; en Chrome/Firefox se usa el "modo pista"
     if (!selectAudio(v, info) && info.prefAudio != null && info.prefAudio !== browserDefault && canRemux()) setAudio(info.prefAudio, startAt);
@@ -727,6 +740,7 @@ async function renderPlayer(fileId) {
   $('#p-play').onclick = toggle;
   $('#p-rew').onclick = () => seekBy(-10);
   $('#p-fwd').onclick = () => seekBy(10);
+  $('#p-restart').onclick = () => { seekTo(0); toast('Desde el principio'); wake(); };
   if (info.next) $('#p-next').onclick = playNext;
   if ($('#p-full')) $('#p-full').onclick = () => (document.fullscreenElement ? document.exitFullscreen() : player.requestFullscreen?.());
   if ($('#p-audio')) {
