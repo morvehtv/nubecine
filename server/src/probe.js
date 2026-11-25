@@ -38,18 +38,21 @@ function pickCastellano(audio) {
 function ffprobe(url, timeoutMs = 90000) {
   return new Promise((resolve, reject) => {
     execFile('ffprobe', ['-v', 'error', '-rw_timeout', '30000000', '-select_streams', 'a',
-      '-show_entries', 'stream=index,codec_name,channels:stream_tags=language,title:stream_disposition=default',
+      '-show_entries', 'format=duration:stream=index,codec_name,channels:stream_tags=language,title,handler_name:stream_disposition=default',
       '-of', 'json', url], { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) return reject(err);
       try {
-        const streams = JSON.parse(stdout).streams || [];
-        resolve(streams.map((s) => ({
+        const json = JSON.parse(stdout);
+        const streams = json.streams || [];
+        const audio = streams.map((s) => ({
           lang: (s.tags && s.tags.language) || '',
-          title: (s.tags && s.tags.title) || '',
+          // En MP4 el nombre de la pista suele ir en handler_name (se ignoran los genéricos)
+          title: (s.tags && (s.tags.title || (/^(sound|audio)handler$|core media|iso media|^$/i.test((s.tags.handler_name || '').trim()) ? '' : s.tags.handler_name.trim()))) || '',
           codec: s.codec_name || '',
           channels: s.channels || 0,
           default: !!(s.disposition && s.disposition.default),
-        })));
+        }));
+        resolve({ audio, duration: parseFloat((json.format || {}).duration) || 0 });
       } catch (e) { reject(e); }
     });
   });

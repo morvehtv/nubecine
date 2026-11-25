@@ -21,6 +21,7 @@ const ICON = {
   pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
   back10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><text x="12" y="15.5" font-size="7.5" text-anchor="middle" fill="currentColor" stroke="none" font-weight="700">10</text></svg>',
   fwd10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/><text x="12" y="15.5" font-size="7.5" text-anchor="middle" fill="currentColor" stroke="none" font-weight="700">10</text></svg>',
+  audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
   cc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 10.5a2 2 0 1 0 0 3M17 10.5a2 2 0 1 0 0 3" stroke-linecap="round"/></svg>',
   full: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
   next: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5.5v13a1 1 0 0 0 1.5.86L16 13.5V18a1 1 0 0 0 2 0V6a1 1 0 0 0-2 0v4.5L6.5 4.64A1 1 0 0 0 5 5.5z"/></svg>',
@@ -592,6 +593,7 @@ async function renderPlayer(fileId) {
           <button class="icon-btn focusable" id="p-fwd" aria-label="Avanzar 10 segundos">${ICON.fwd10}</button>
           <span class="time" id="time">0:00 / 0:00</span>
           ${info.next ? `<button class="btn small focusable" id="p-next">${ICON.next} Siguiente</button>` : ''}
+          ${(info.audio || []).length > 1 ? `<button class="icon-btn focusable" id="p-audio" aria-label="Idioma del audio">${ICON.audio}</button>` : ''}
           ${(info.subs || []).length ? `<button class="icon-btn focusable" id="p-cc" aria-label="Subtítulos">${ICON.cc}</button>` : ''}
           ${!isTV && !window.NubeTV ? `<button class="icon-btn focusable" id="p-full" aria-label="Pantalla completa">${ICON.full}</button>` : ''}
         </div>
@@ -600,40 +602,84 @@ async function renderPlayer(fileId) {
   const player = $('.player'), v = $('#v');
   let lastSave = 0, idleT = null, ended = false, countdown = null;
 
+  // ---- Pistas de audio ----
+  // Safari cambia de pista él solo. En Chrome/Firefox el servidor prepara el vídeo con la pista
+  // elegida ("modo pista"): ese vídeo empieza en 'offset', así que el tiempo real es offset + currentTime.
+  let mode = 'direct', offset = 0, audioN = null;
+  const audios = info.audio || [];
+  const browserDefault = Math.max(0, audios.findIndex((a) => a.default));
+  const canNativeSwitch = () => !!(v.audioTracks && v.audioTracks.length > 1);
+  const canRemux = () => audios.length > 1 && info.duration > 0;
+  const cur = () => offset + (v.currentTime || 0);
+  const dur = () => (mode === 'remux' ? info.duration : (isFinite(v.duration) && v.duration ? v.duration : info.duration)) || 0;
+  // Los subtítulos se desplazan para que sigan sincronizados en modo pista
+  const shiftSubs = () => {
+    for (const tr of v.textTracks) {
+      if (!tr.cues) continue;
+      for (const c of tr.cues) {
+        if (c._s == null) { c._s = c.startTime; c._e = c.endTime; }
+        c.startTime = c._s - offset; c.endTime = c._e - offset;
+      }
+    }
+  };
+  for (const el of $$('track', v)) el.addEventListener('load', shiftSubs);
+  const setAudio = (n, at = cur()) => {
+    const playing = !(v.paused && v.currentTime > 0); // si estaba en pausa a propósito, sigue en pausa
+    if (n === browserDefault) {
+      mode = 'direct'; offset = 0; audioN = null;
+      v.src = '/stream/' + fileId;
+      v.addEventListener('loadedmetadata', () => { v.currentTime = at; shiftSubs(); }, { once: true });
+    } else {
+      mode = 'remux'; audioN = n; offset = Math.max(0, at);
+      v.src = `/stream/${fileId}/audio/${n}?t=${offset.toFixed(1)}`;
+      shiftSubs();
+    }
+    $('#spin').hidden = false;
+    if (playing) v.play().catch(() => {});
+  };
+  const seekTo = (sec) => {
+    const d = dur();
+    sec = Math.max(0, d ? Math.min(d - 1, sec) : sec);
+    if (mode === 'remux') setAudio(audioN, sec); else v.currentTime = sec;
+  };
+  const currentAudio = () => {
+    if (canNativeSwitch()) { for (let i = 0; i < v.audioTracks.length; i++) if (v.audioTracks[i].enabled) return i; return 0; }
+    return mode === 'remux' ? audioN : browserDefault;
+  };
+
   const save = (keepalive) => {
-    if (!v.duration || !isFinite(v.duration)) return;
+    if (!dur()) return;
     lastSave = Date.now();
-    api('/api/progress', { method: 'POST', body: { fileId, t: v.currentTime, d: v.duration }, keepalive }).catch(() => {});
+    api('/api/progress', { method: 'POST', body: { fileId, t: cur(), d: dur() }, keepalive }).catch(() => {});
   };
   const wake = () => {
     player.classList.remove('idle');
     clearTimeout(idleT);
     idleT = setTimeout(() => { if (!v.paused && !$('.menu', player)) { player.classList.add('idle'); } }, 3500);
   };
-  const seekBy = (s) => { if (isFinite(v.duration)) v.currentTime = Math.max(0, Math.min(v.duration - 1, v.currentTime + s)); wake(); };
+  const seekBy = (s) => { if (dur()) seekTo(cur() + s); wake(); };
   const toggle = () => { v.paused ? v.play() : v.pause(); wake(); };
   const leave = () => { save(true); if (state.depth > 0) history.back(); else go('/t/' + info.titleId); };
   const playNext = () => { save(true); location.replace('#/ver/' + info.next.fileId); };
 
   // Subtítulos: por defecto activa español si existe
-  const setSub = (idx) => { [...v.textTracks].forEach((tr, i) => { tr.mode = i === idx ? 'showing' : 'disabled'; }); try { localStorage.setItem('subLang', idx >= 0 ? info.subs[idx].lang : 'off'); } catch {} };
+  const setSub = (idx) => { [...v.textTracks].forEach((tr, i) => { tr.mode = i === idx ? 'showing' : 'disabled'; }); setTimeout(() => shiftSubs(), 300); try { localStorage.setItem('subLang', idx >= 0 ? info.subs[idx].lang : 'off'); } catch {} };
   v.addEventListener('loadedmetadata', () => {
     let pref = 'es'; try { pref = localStorage.getItem('subLang') || 'es'; } catch {}
     setSub(pref === 'off' ? -1 : (info.subs || []).findIndex((s) => s.lang === pref));
     const p = info.progress;
-    if (p && p.t > 15 && p.d && p.t / p.d < 0.93) { v.currentTime = p.t - 3; toast('Reanudando desde ' + fmtTime(p.t)); }
-    // Audio en castellano: Safari puede cambiar de pista; Chrome/Firefox solo reproducen la principal
-    const prefA = info.prefAudio != null ? (info.audio || [])[info.prefAudio] : null;
-    if (!selectAudio(v, info) && prefA && !prefA.default && (info.audio || []).length > 1) {
-      setTimeout(() => toast('Este vídeo tiene ' + prefA.label + ', pero el navegador reproduce la pista principal. Usa la app para oírlo en castellano.'), 2800);
-    }
+    const startAt = p && p.t > 15 && p.d && p.t / p.d < 0.93 ? p.t - 3 : 0;
+    if (startAt) toast('Reanudando desde ' + fmtTime(p.t));
+    // Audio en castellano: Safari cambia la pista; en Chrome/Firefox se usa el "modo pista"
+    if (!selectAudio(v, info) && info.prefAudio != null && info.prefAudio !== browserDefault && canRemux()) setAudio(info.prefAudio, startAt);
+    else if (startAt) v.currentTime = startAt;
   }, { once: true });
 
   v.addEventListener('timeupdate', () => {
-    const d = v.duration || 0, pct = d ? (v.currentTime / d) * 100 : 0;
+    const d = dur(), pct = d ? (cur() / d) * 100 : 0;
     $('#fill').style.width = pct + '%'; $('#knob').style.left = pct + '%';
-    $('#time').textContent = fmtTime(v.currentTime) + ' / ' + fmtTime(d);
-    if (v.buffered.length && d) $('#buf').style.width = (v.buffered.end(v.buffered.length - 1) / d * 100) + '%';
+    $('#time').textContent = fmtTime(cur()) + ' / ' + fmtTime(d);
+    if (v.buffered.length && d) $('#buf').style.width = Math.min(100, (offset + v.buffered.end(v.buffered.length - 1)) / d * 100) + '%';
     if (Date.now() - lastSave > 10000) save();
   });
   v.addEventListener('play', () => { $('#p-play').innerHTML = ICON.pause; $('#p-center').innerHTML = ICON.pause; wake(); });
@@ -661,6 +707,23 @@ async function renderPlayer(fileId) {
   $('#p-fwd').onclick = () => seekBy(10);
   if (info.next) $('#p-next').onclick = playNext;
   if ($('#p-full')) $('#p-full').onclick = () => (document.fullscreenElement ? document.exitFullscreen() : player.requestFullscreen?.());
+  if ($('#p-audio')) {
+    if (!canRemux() && !('audioTracks' in v)) $('#p-audio').hidden = true; // sin forma de cambiarla en este navegador
+    $('#p-audio').onclick = () => {
+      if ($('.menu', player)) return $('.menu', player).remove();
+      const active = currentAudio();
+      const m = document.createElement('div'); m.className = 'menu';
+      m.innerHTML = '<div class="menu-title">Audio</div>' + audios.map((a, i) => `<button class="focusable${active === i ? ' on' : ''}" data-i="${i}">${esc(a.label)}</button>`).join('');
+      m.onclick = (e) => {
+        const b = e.target.closest('button'); if (!b) return;
+        const n = +b.dataset.i;
+        if (canNativeSwitch()) { for (let i = 0; i < v.audioTracks.length; i++) v.audioTracks[i].enabled = i === n; }
+        else if (n !== currentAudio()) setAudio(n);
+        m.remove(); focusEl($('#p-audio')); toast('Audio: ' + audios[n].label);
+      };
+      $('.ui', player).appendChild(m); focusEl($('button.on', m) || $('button', m));
+    };
+  }
   if ($('#p-cc')) $('#p-cc').onclick = () => {
     if ($('.menu', player)) return $('.menu', player).remove();
     const active = [...v.textTracks].findIndex((t) => t.mode === 'showing');
@@ -678,11 +741,11 @@ async function renderPlayer(fileId) {
   const seekPct = (e) => { const r = seek.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)); };
   const preview = (pct) => {
     $('#fill').style.width = pct * 100 + '%'; $('#knob').style.left = pct * 100 + '%';
-    if (isFinite(v.duration)) $('#time').textContent = fmtTime(pct * v.duration) + ' / ' + fmtTime(v.duration);
+    if (dur()) $('#time').textContent = fmtTime(pct * dur()) + ' / ' + fmtTime(dur());
   };
   seek.addEventListener('pointerdown', (e) => { dragging = true; seek.setPointerCapture(e.pointerId); preview(seekPct(e)); wake(); e.preventDefault(); });
   seek.addEventListener('pointermove', (e) => { if (dragging) { preview(seekPct(e)); wake(); } });
-  const endDrag = (e) => { if (!dragging) return; dragging = false; if (isFinite(v.duration)) v.currentTime = seekPct(e) * v.duration; wake(); };
+  const endDrag = (e) => { if (!dragging) return; dragging = false; if (dur()) seekTo(seekPct(e) * dur()); wake(); };
   seek.addEventListener('pointerup', endDrag);
   seek.addEventListener('pointercancel', () => { dragging = false; });
 

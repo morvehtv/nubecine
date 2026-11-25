@@ -3,6 +3,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 const DB = require('./db');
 const { createStorage } = require('./storage');
 const { buildLibrary, mergeCatalog, enrichWithTMDB, EDITABLE } = require('./scanner');
@@ -175,7 +176,7 @@ async function probeAll() {
   probing = true;
   D.media = D.media || {};
   try {
-    const todo = Object.entries(D.files).filter(([id, f]) => f.kind === 'video' && (!D.media[id] || D.media[id].key !== `${f.path}|${f.size}`));
+    const todo = Object.entries(D.files).filter(([id, f]) => f.kind === 'video' && (!D.media[id] || D.media[id].key !== `${f.path}|${f.size}` || (D.media[id].duration === undefined && !D.media[id].error)));
     if (todo.length) log(`Analizando audio de ${todo.length} vídeo(s)…`);
     let n = 0;
     const worker = async () => {
@@ -183,8 +184,8 @@ async function probeAll() {
         const [id, f] = todo.shift();
         const key = `${f.path}|${f.size}`;
         try {
-          const audio = await ffprobe(storage.probeUrl(f.root, f.path));
-          D.media[id] = { key, audio, pref: pickCastellano(audio) };
+          const { audio, duration } = await ffprobe(storage.probeUrl(f.root, f.path));
+          D.media[id] = { key, audio, duration, pref: pickCastellano(audio) };
         } catch (e) {
           D.media[id] = { key, audio: [], pref: null, error: String(e.message || e).slice(0, 200) };
         }
@@ -200,8 +201,12 @@ async function probeAll() {
 }
 function audioInfo(fileId) {
   const m = (D.media || {})[fileId];
-  if (!m || !m.audio || !m.audio.length) return { audio: [], prefAudio: null };
-  return { audio: m.audio.map((a, i) => ({ n: i, label: audioLabel(a), lang: a.lang, title: a.title, codec: a.codec, default: a.default })), prefAudio: m.pref };
+  if (!m || !m.audio || !m.audio.length) return { audio: [], prefAudio: null, duration: (m && m.duration) || 0 };
+  const audio = m.audio.map((a, i) => ({ n: i, label: audioLabel(a), lang: a.lang, title: a.title, codec: a.codec, default: a.default }));
+  // Si dos pistas se llaman igual, se numeran ("Castellano 2")
+  const seen = {};
+  for (const a of audio) { seen[a.label] = (seen[a.label] || 0) + 1; if (seen[a.label] > 1) a.label += ' ' + seen[a.label]; }
+  return { audio, prefAudio: m.pref, duration: m.duration || 0 };
 }
 
 // ---------- Tiempo real: avisos a las webs/apps abiertas (Server-Sent Events) ----------
@@ -425,6 +430,32 @@ async function pipeFile(req, res, fileId, kinds) {
   }
 }
 route('GET', '/stream/:fileId', { auth: true }, (req, res, p) => pipeFile(req, res, p.fileId, ['video']));
+// Vídeo con otra pista de audio, preparado al vuelo con ffmpeg (el archivo original no se toca).
+// /stream/ID/audio/N?t=SEGUNDOS  -> MP4 fragmentado que empieza en ese segundo
+const remuxing = new Map(); // userId -> proceso ffmpeg (uno por usuario)
+route('GET', '/stream/:fileId/audio/:n', { auth: true }, (req, res, p, user) => {
+  const f = D.files[p.fileId];
+  const n = parseInt(p.n, 10);
+  const m = (D.media || {})[p.fileId];
+  if (!f || f.kind !== 'video' || !m || !(n >= 0 && n < (m.audio || []).length)) return fail(res, 404, 'No encontrado');
+  const t = Math.max(0, parseFloat(new URL(req.url, 'http://x').searchParams.get('t')) || 0);
+  const prev = remuxing.get(user.id); if (prev) prev.kill('SIGKILL');
+  const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-rw_timeout', '30000000',
+    '-ss', String(t), '-i', storage.probeUrl(f.root, f.path),
+    '-map', '0:v:0', '-map', `0:a:${n}`, '-sn', '-dn',
+    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-f', 'mp4', 'pipe:1'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  remuxing.set(user.id, ff);
+  let err = '';
+  ff.stderr.on('data', (d) => { err = (err + d).slice(-500); });
+  res.writeHead(200, { ...SEC_HEADERS, 'Content-Type': 'video/mp4', 'Cache-Control': 'no-store' });
+  ff.stdout.pipe(res);
+  const stop = () => { try { ff.kill('SIGKILL'); } catch {} };
+  req.on('close', stop);
+  ff.on('close', (code) => { if (remuxing.get(user.id) === ff) remuxing.delete(user.id); if (code && err) log('ffmpeg:', err.trim()); res.end(); });
+  ff.on('error', (e) => { log('ffmpeg no disponible:', e.message); res.end(); });
+});
+
 route('GET', '/img/:fileId', { auth: true }, (req, res, p) => pipeFile(req, res, p.fileId, ['image']));
 route('GET', '/sub/:fileId', { auth: true }, (req, res, p) => pipeFile(req, res, p.fileId, ['sub']));
 
