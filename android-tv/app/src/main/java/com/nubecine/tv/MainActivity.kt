@@ -29,7 +29,6 @@ import android.widget.EditText
  */
 class MainActivity : Activity() {
 
-    private companion object { const val REQ_PLAYER = 42 }
 
     private var web: WebView? = null
     private val isTv by lazy {
@@ -154,43 +153,31 @@ class MainActivity : Activity() {
         @JavascriptInterface fun changeServer() = runOnUiThread { this@MainActivity.changeServer() }
         @JavascriptInterface fun version(): String = BuildConfig.VERSION_NAME
         @JavascriptInterface fun isTV(): Boolean = isTv
-        @JavascriptInterface fun hasNativePlayer(): Boolean = true
-
-        /** Abre el reproductor nativo (ExoPlayer) a pantalla completa. */
+        /** El reproductor web pide pantalla completa (y horizontal en el móvil) al empezar un vídeo. */
         @JavascriptInterface
-        fun play(url: String, title: String, startSec: Double, subsJson: String, fileId: String) =
-            playWithAudio(url, title, startSec, subsJson, fileId, "{}")
-
-        /** Igual que play(), indicando qué pista de audio es castellano (detectada por el servidor). */
-        @JavascriptInterface
-        fun playWithAudio(url: String, title: String, startSec: Double, subsJson: String, fileId: String, audioJson: String) = runOnUiThread {
-            val u = Uri.parse(url)
-            val base = u.scheme + "://" + u.authority
-            val i = Intent(this@MainActivity, PlayerActivity::class.java)
-                .putExtra(PlayerActivity.EXTRA_URL, url)
-                .putExtra(PlayerActivity.EXTRA_BASE, base)
-                .putExtra(PlayerActivity.EXTRA_TITLE, title)
-                .putExtra(PlayerActivity.EXTRA_START_MS, (startSec * 1000).toLong())
-                .putExtra(PlayerActivity.EXTRA_SUBS, subsJson)
-                .putExtra(PlayerActivity.EXTRA_FILE_ID, fileId)
-                .putExtra(PlayerActivity.EXTRA_AUDIO, audioJson)
-            CookieManager.getInstance().flush()
-            @Suppress("DEPRECATION")
-            startActivityForResult(i, REQ_PLAYER)
-        }
+        fun fullscreen(on: Boolean) = runOnUiThread { setVideoMode(on) }
     }
 
-    // ---------- Vuelta del reproductor nativo: la web guarda el progreso y muestra la ficha ----------
-    @Deprecated("Activity result API clásica")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        @Suppress("DEPRECATION")
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQ_PLAYER || data == null) return
-        val fileId = (data.getStringExtra(PlayerActivity.EXTRA_FILE_ID) ?: "").replace("'", "")
-        val pos = data.getDoubleExtra(PlayerActivity.RESULT_POS, 0.0)
-        val dur = data.getDoubleExtra(PlayerActivity.RESULT_DUR, 0.0)
-        web?.evaluateJavascript("window.onNativePlayerClosed && window.onNativePlayerClosed('$fileId', $pos, $dur)", null)
-        web?.requestFocus()
+    // ---------- Modo vídeo: horizontal y sin barras del sistema ----------
+    private fun setVideoMode(on: Boolean) {
+        if (!isTv) {
+            requestedOrientation = if (on) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            window.insetsController?.let {
+                val bars = android.view.WindowInsets.Type.statusBars() or android.view.WindowInsets.Type.navigationBars()
+                if (on) {
+                    it.hide(bars)
+                    it.systemBarsBehavior = android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                } else it.show(bars)
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (on) (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE) else 0
+        }
     }
 
     // ---------- Botón Atrás del mando ----------

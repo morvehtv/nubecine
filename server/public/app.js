@@ -487,7 +487,8 @@ function selectAudio(v, info) {
   for (let i = 0; i < tracks.length; i++) tracks[i].enabled = i === idx;
   return true;
 }
-const hasNative = () => !!(window.NubeTV && window.NubeTV.hasNativePlayer && window.NubeTV.play);
+// La app de Android usa el reproductor web (ExoPlayer desincronizaba el audio en algunos vídeos)
+const hasNative = () => false;
 const isIPhone = /iPhone|iPod/.test(navigator.userAgent);
 const resumeAt = (p) => (p && p.t > 15 && p.d && p.t / p.d < 0.93 ? p.t - 3 : 0);
 const playLabel = (info) => info.saga ? (info.episodeName || info.title) : info.title + (info.type === 'series' ? ` · T${info.season}:E${info.episode}${info.episodeName ? ' · ' + info.episodeName : ''}` : '');
@@ -601,6 +602,8 @@ async function renderPlayer(fileId) {
     </div></div>`;
   const player = $('.player'), v = $('#v');
   let lastSave = 0, idleT = null, ended = false, countdown = null;
+  // En la app del móvil: vídeo en horizontal y a pantalla completa
+  try { window.NubeTV && window.NubeTV.fullscreen && window.NubeTV.fullscreen(true); } catch {}
 
   // ---- Pistas de audio ----
   // Safari cambia de pista él solo. En Chrome/Firefox el servidor prepara el vídeo con la pista
@@ -795,6 +798,7 @@ async function renderPlayer(fileId) {
   const onBack = () => leave();
   window.handlePlayerBack = onBack;
   cleanup = () => {
+    try { window.NubeTV && window.NubeTV.fullscreen && window.NubeTV.fullscreen(false); } catch {}
     if (!ended) save(true);
     clearTimeout(idleT); clearInterval(countdown);
     v.pause(); v.removeAttribute('src'); v.load();
