@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0c10">
+  <title>NubeCine</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header id="topbar" hidden>
+    <a href="#/" class="brand focusable" id="brand"><span class="brand-mark"></span><span id="brand-name">NubeCine</span></a>
+    <nav>
+      <a href="#/" class="focusable" data-nav="home">Inicio</a>
+      <span id="nav-sections" style="display:contents"></span>
+      <a href="#/mi-lista" class="focusable" data-nav="mi-lista">Mi lista</a>
+      <a href="#/buscar" class="focusable" data-nav="buscar">Buscar</a>
+      <a href="#/admin" class="focusable" data-nav="admin" id="nav-admin" hidden>Admin</a>
+    </nav>
+    <a href="#/cuenta" class="focusable account" id="account-btn" aria-label="Cuenta"></a>
+  </header>
+  <main id="app" tabindex="-1"></main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

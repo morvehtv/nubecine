@@ -1,0 +1,15 @@
+{
+  "siteName": "NubeCine",
+  "port": 3000,
+
+  "storage": "rclone",
+  "rcloneUrl": "http://127.0.0.1:5572",
+  "remote": "jotta:",
+  "moviesPath": "NubeCine/Peliculas",
+  "seriesPath": "NubeCine/Series",
+
+  "inviteCode": "cambia-este-codigo",
+  "tmdbApiKey": "",
+  "autoScanMinutes": 60,
+  "dataFile": "./data/db.json"
+}

@@ -1,0 +1,33 @@
+# Despliegue completo: web + rclone (Jottacloud) + HTTPS automático con Caddy.
+# 1) Copia .env.example a .env y rellénalo.  2) docker compose up -d --build
+services:
+  nubecine:
+    build: ./server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      RCLONE_CONFIG: /config/rclone.conf
+      DATA_FILE: /app/data/db.json
+    volumes:
+      - ./rclone:/config          # aquí va rclone.conf (con tu cuenta de Jottacloud)
+      - ./data:/app/data          # usuarios, catálogo y progreso
+    expose:
+      - "3000"
+
+  caddy:
+    # Solo se arranca con --profile https (VPS con los puertos 80/443 libres)
+    profiles: ["https"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - nubecine
+
+volumes:
+  caddy_data:

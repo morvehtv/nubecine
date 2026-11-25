@@ -1,0 +1,7 @@
+.env
+data/
+rclone/
+server/data/
+server/config.json
+server/media/
+node_modules/

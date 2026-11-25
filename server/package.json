@@ -1,0 +1,13 @@
+{
+  "name": "nubecine",
+  "version": "1.0.0",
+  "description": "Web para ver películas y series guardadas en Jottacloud (vía rclone)",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,54 @@
+# Compila la app (Android TV, Fire TV y móvil) y la publica en "Releases".
+# Enlace fijo de descarga (repositorio público):
+#   https://github.com/USUARIO/REPOSITORIO/releases/latest/download/NubeCine.apk
+name: Compilar APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: "Dirección de tu web"
+        required: false
+        default: "http://94.143.140.93:8090"
+
+permissions:
+  contents: write
+
+env:
+  SERVER_URL: ${{ github.event.inputs.server_url || 'http://94.143.140.93:8090' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-tv
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Compilar
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug -PserverUrl="$SERVER_URL" -PversionCode=${{ github.run_number }}
+      - name: Renombrar
+        run: cp app/build/outputs/apk/debug/app-debug.apk NubeCine.apk
+      - name: Guardar como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: NubeCine-apk
+          path: android-tv/NubeCine.apk
+      - name: Publicar en Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.${{ github.run_number }}
+          name: NubeCine ${{ github.run_number }}
+          body: "App para Android TV, Fire TV y móvil. Servidor: ${{ env.SERVER_URL }}"
+          files: android-tv/NubeCine.apk
+          make_latest: true

@@ -1,0 +1,6 @@
+# Modo "convivencia": para VPS que ya usan los puertos 80/443 con otras webs.
+# Arranca solo NubeCine (sin Caddy) y la publica en el puerto PUBLIC_PORT (por defecto 8090).
+services:
+  nubecine:
+    ports:
+      - "${PUBLIC_PORT:-8090}:3000"
