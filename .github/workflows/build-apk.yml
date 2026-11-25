@@ -31,7 +31,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      # El SDK de Android ya viene instalado en los servidores de GitHub (ANDROID_HOME)
       - uses: gradle/actions/setup-gradle@v4
       - name: Compilar
         run: |
