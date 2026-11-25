@@ -86,7 +86,7 @@ const prettySection = (n) => n.trim().split(/\s+/).map((w) => {
   return ['de', 'la', 'y', 'el', 'los', 'las', 'del'].includes(low) ? low : low.charAt(0).toUpperCase() + low.slice(1);
 }).join(' ');
 // Orden del menú (sin importar mayúsculas ni tildes). Las que no estén aquí van detrás, por orden alfabético.
-const SECTION_ORDER = ['peliculas', 'series', 'peliculas anime', 'peliculas animacion', 'series infantiles', 'series anime', 'documentales', 'docuseries', 'telenovelas', 'programas de tv', 'sagas'];
+const SECTION_ORDER = ['peliculas', 'series', 'peliculas animacion', 'peliculas antiguas', 'series infantiles', 'series anime', 'documentales', 'docuseries', 'telenovelas', 'programas de tv', 'sagas'];
 const sectionRank = (id) => { const i = SECTION_ORDER.indexOf(plain(id).replace(/\s+/g, ' ').trim()); return i < 0 ? 999 : i; };
 
 // Construye una sección (películas o series) a partir de su listado
