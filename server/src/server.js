@@ -117,6 +117,7 @@ function view(t) {
     id: t.id, type: t.type, section: t.section || (t.type === 'movie' ? 'Peliculas' : 'Series'), title: pick('title'), year: pick('year'), overview: pick('overview') || '',
     rating: pick('rating') || null, genres: pick('genres') || [], poster, backdrop, addedAt: t.addedAt,
   };
+  if (t.saga) out.saga = true;
   if (t.type === 'series') {
     const seasons = Object.keys(t.seasons || {}).map(Number).sort((a, b) => a - b);
     out.seasonCount = seasons.length;
@@ -275,7 +276,7 @@ route('GET', '/api/play/:fileId', { auth: true }, (req, res, p, user) => {
     if (eps[i + 1]) next = { fileId: eps[i + 1].fileId, season: eps[i + 1].season, episode: eps[i + 1].episode, name: eps[i + 1].name };
   }
   send(res, 200, {
-    fileId: p.fileId, titleId: t.id, title: view(t).title, type: t.type,
+    fileId: p.fileId, titleId: t.id, title: view(t).title, type: t.type, saga: !!t.saga,
     season: e?.season ?? null, episode: e?.episode ?? null, episodeName: e?.name ?? null,
     subs: e ? e.subs : t.subs, progress: (D.progress[user.id] || {})[p.fileId] || null, next,
     backdrop: view(t).backdrop,

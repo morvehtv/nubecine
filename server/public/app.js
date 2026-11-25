@@ -64,9 +64,9 @@ function cardHTML(t, opts = {}) {
   const wide = !!opts.wide;
   const pct = opts.progress ? Math.min(100, Math.round((opts.progress.t / (opts.progress.d || 1)) * 100)) : 0;
   const href = opts.play ? `#/ver/${t.fileId}` : `#/t/${t.id}`;
-  const sub = opts.sub ?? [t.year, t.type === 'series' ? `${t.seasonCount} temp.` : null].filter(Boolean).join(' · ');
+  const sub = opts.sub ?? [t.year, t.saga ? `${t.episodeCount} películas` : t.type === 'series' ? `${t.seasonCount} temp.` : null].filter(Boolean).join(' · ');
   return `<a class="card focusable${wide ? ' wide' : ''}" href="${href}">
-    <div class="poster">${posterHTML(t, wide)}${t.type === 'series' && !wide ? '<span class="badge">SERIE</span>' : ''}${pct ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}</div>
+    <div class="poster">${posterHTML(t, wide)}${t.type === 'series' && !wide ? `<span class="badge">${t.saga ? 'SAGA' : 'SERIE'}</span>` : ''}${pct ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}</div>
     <div class="label">${esc(t.title)}</div><div class="sublabel">${esc(sub)}</div></a>`;
 }
 
@@ -261,7 +261,7 @@ function heroHTML(t, buttons) {
     <div class="hero-content">
       <h1>${esc(t.title)}</h1>
       <div class="meta">${t.year ? `<span>${t.year}</span>` : ''}${t.rating ? `<span class="star">★ ${t.rating}</span>` : ''}
-        <span class="pill">${t.type === 'series' ? `Serie · ${t.seasonCount} temporada${t.seasonCount > 1 ? 's' : ''}` : 'Película'}</span>
+        <span class="pill">${t.saga ? `Saga · ${t.episodeCount} películas` : t.type === 'series' ? `Serie · ${t.seasonCount} temporada${t.seasonCount > 1 ? 's' : ''}` : 'Película'}</span>
         ${(t.genres || []).slice(0, 3).map((g) => `<span>${esc(g)}</span>`).join('')}</div>
       ${t.overview ? `<p>${esc(t.overview)}</p>` : ''}
       <div class="actions">${buttons}</div>
@@ -286,7 +286,7 @@ async function renderHome() {
   app.innerHTML = heroHTML(hero, `
       <a class="btn primary focusable" id="hero-play" href="#/${cont ? 'ver/' + cont.fileId : 't/' + hero.id}">${ICON.play}${cont ? 'Continuar' : (hero.type === 'movie' ? 'Reproducir' : 'Ver serie')}</a>
       <a class="btn focusable" href="#/t/${hero.id}">Más información</a>`) +
-    rowHTML('Seguir viendo', c.continue, (x) => cardHTML(x, { wide: true, play: true, progress: x, sub: x.type === 'series' ? `T${x.season} · E${x.episode}` : fmtTime(x.d - x.t) + ' restantes' })) +
+    rowHTML('Seguir viendo', c.continue, (x) => cardHTML(x, { wide: true, play: true, progress: x, sub: x.saga ? `Película ${x.episode}` : x.type === 'series' ? `T${x.season} · E${x.episode}` : fmtTime(x.d - x.t) + ' restantes' })) +
     rowHTML('Mi lista', c.mylist, (x) => cardHTML(x)) +
     rowHTML('Añadido recientemente', recent.slice(0, 20), (x) => cardHTML(x)) +
     c.sections.map((s) => rowHTML(s.name, c.items.filter((x) => x.section === s.id).sort((a, b) => a.title.localeCompare(b.title, 'es')), (x) => cardHTML(x))).join('');
@@ -352,14 +352,16 @@ async function renderTitle(id) {
       target = done ? eps[eps.indexOf(watched) + 1] || watched : watched;
     }
     playFile = target.fileId; season = target.season;
-    playLabel = (watched ? 'Continuar' : 'Ver') + ` T${target.season}:E${target.episode}`;
+    playLabel = t.saga ? (watched ? 'Continuar: ' : 'Ver: ') + (target.name || 'Película ' + target.episode)
+      : (watched ? 'Continuar' : 'Ver') + ` T${target.season}:E${target.episode}`;
   }
   app.innerHTML = `<div class="detail">${heroHTML(t, `
       <a class="btn primary focusable" id="play" href="#/ver/${playFile}">${ICON.play}${esc(playLabel)}</a>
       <button class="btn focusable" id="mylist">${t.inList ? ICON.check + 'En mi lista' : ICON.plus + 'Mi lista'}</button>
       ${state.me.admin ? `<a class="btn ghost focusable" href="#/admin/contenido?edit=${t.id}">Editar</a>` : ''}`)}
     <div class="detail-body">${t.type === 'series' ? `<div>
-      <div class="seasons">${t.seasons.map((s) => `<button class="chip focusable${s.season === season ? ' on' : ''}" data-season="${s.season}">Temporada ${s.season}</button>`).join('')}</div>
+      ${t.saga ? '<h2 style="margin:8px 0 14px;font-size:20px">Películas de la saga</h2>' : ''}
+      <div class="seasons"${t.saga ? ' hidden' : ''}>${t.seasons.map((s) => `<button class="chip focusable${s.season === season ? ' on' : ''}" data-season="${s.season}">Temporada ${s.season}</button>`).join('')}</div>
       <div class="episodes" id="eps"></div></div>` : ''}</div></div>`;
   $('#mylist').addEventListener('click', async (e) => {
     const r = await api('/api/mylist/' + t.id, { method: 'POST' });
@@ -372,8 +374,8 @@ async function renderTitle(id) {
       $('#eps').innerHTML = s.episodes.map((e) => {
         const pct = e.progress ? Math.min(100, Math.round(e.progress.t / (e.progress.d || 1) * 100)) : 0;
         return `<a class="episode focusable" href="#/ver/${e.fileId}"><div class="num">${e.episode}</div>
-          <div><div class="name">${esc(e.name || 'Episodio ' + e.episode)}</div>
-          <div class="small">T${e.season} · E${e.episode}${e.progress?.d ? ' · ' + fmtTime(e.progress.d) : ''}</div>
+          <div><div class="name">${esc(e.name || (t.saga ? 'Película ' : 'Episodio ') + e.episode)}</div>
+          <div class="small">${t.saga ? 'Película ' + e.episode : `T${e.season} · E${e.episode}`}${e.progress?.d ? ' · ' + fmtTime(e.progress.d) : ''}</div>
           ${pct ? `<div class="ep-bar"><i style="width:${pct}%"></i></div>` : ''}</div>
           <span class="go">${ICON.play}</span></a>`;
       }).join('');
@@ -394,7 +396,7 @@ async function renderTitle(id) {
 const hasNative = () => !!(window.NubeTV && window.NubeTV.hasNativePlayer && window.NubeTV.play);
 const isIPhone = /iPhone|iPod/.test(navigator.userAgent);
 const resumeAt = (p) => (p && p.t > 15 && p.d && p.t / p.d < 0.93 ? p.t - 3 : 0);
-const playLabel = (info) => info.title + (info.type === 'series' ? ` · T${info.season}:E${info.episode}${info.episodeName ? ' · ' + info.episodeName : ''}` : '');
+const playLabel = (info) => info.saga ? (info.episodeName || info.title) : info.title + (info.type === 'series' ? ` · T${info.season}:E${info.episode}${info.episodeName ? ' · ' + info.episodeName : ''}` : '');
 function showTitle(titleId) {
   const here = location.hash === '#/t/' + titleId;
   if (here) render(); else go('/t/' + titleId);
@@ -470,7 +472,7 @@ async function renderPlayer(fileId) {
     $('#ios-play').onclick = () => playIPhone(fileId);
     return;
   }
-  const sub = info.type === 'series' ? `T${info.season} · E${info.episode}${info.episodeName ? ' — ' + info.episodeName : ''}` : '';
+  const sub = info.saga ? `${info.title} · Película ${info.episode}` : info.type === 'series' ? `T${info.season} · E${info.episode}${info.episodeName ? ' — ' + info.episodeName : ''}` : '';
   app.innerHTML = `<div class="player">
     <video id="v" preload="auto" playsinline autoplay src="/stream/${esc(fileId)}">
       ${(info.subs || []).map((s, i) => `<track kind="subtitles" src="/sub/${esc(s.fileId)}" srclang="${esc(s.lang)}" label="${esc(s.label)}"${i === 0 && s.lang !== 'es' ? '' : ''}>`).join('')}

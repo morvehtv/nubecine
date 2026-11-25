@@ -69,8 +69,9 @@ function groupByTop(list) {
 
 // Tipo de una sección según su nombre (o, si no lo dice, según su contenido)
 function sectionKind(name, files) {
+  if (/saga|colecci[oó]n|trilog/i.test(name)) return 'saga';
   if (/pel[ií]cula|movie|film|cine|documental/i.test(name)) return 'movie';
-  if (/serie|show|\btv\b|temporada|season/i.test(name)) return 'series';
+  if (/serie|novela|show|\btv\b|temporada|season/i.test(name)) return 'series';
   return files.some((f) => /s\d{1,2}\s*e\d{1,3}|\b\d{1,2}x\d{1,3}\b|temporada|season/i.test(f.path)) ? 'series' : 'movie';
 }
 // Nombre bonito: "PELICULAS ANIMACION" -> "Películas Animación"
@@ -84,7 +85,7 @@ const prettySection = (n) => n.trim().split(/\s+/).map((w) => {
   return ['de', 'la', 'y', 'el', 'los', 'las', 'del'].includes(low) ? low : low.charAt(0).toUpperCase() + low.slice(1);
 }).join(' ');
 // Orden del menú (sin importar mayúsculas ni tildes). Las que no estén aquí van detrás, por orden alfabético.
-const SECTION_ORDER = ['peliculas', 'series', 'peliculas anime', 'peliculas animacion', 'series infantiles', 'series anime', 'documentales', 'docuseries'];
+const SECTION_ORDER = ['peliculas', 'series', 'peliculas anime', 'peliculas animacion', 'series infantiles', 'series anime', 'documentales', 'docuseries', 'telenovelas', 'sagas'];
 const sectionRank = (id) => { const i = SECTION_ORDER.indexOf(plain(id).replace(/\s+/g, ' ').trim()); return i < 0 ? 999 : i; };
 
 // Construye una sección (películas o series) a partir de su listado
@@ -98,7 +99,43 @@ function buildSection(list, root, kind, section, idPrefix, titles, files) {
     const videos = group.filter((f) => VIDEO.test(f.path));
     if (!videos.length) continue;
     const { title, year } = parseTitle(key);
-    if (kind === 'movie') {
+    if (kind === 'saga') {
+      const imgs = pickImages(group.filter((f) => f.path.split('/').length <= 2));
+      const id = hash('saga:' + idPrefix + key);
+      // Una película por subcarpeta (o por archivo suelto dentro de la saga)
+      const byMovie = new Map();
+      for (const v of videos) {
+        const parts = v.path.split('/');
+        const mk = parts.length > 2 ? parts[1] : noExt(v.path);
+        const cur = byMovie.get(mk);
+        if (!cur || v.size > cur.size) byMovie.set(mk, v);
+      }
+      const movies = [...byMovie.entries()].map(([mk, v]) => {
+        const pt = parseTitle(mk.replace(/^\d{1,2}\s*[-._)]\s*/, ''));
+        const stem = v.path.replace(/\.[^.]+$/, '');
+        const subs = group.filter((f) => SUB.test(f.path) && (f.path.startsWith(stem) || f.path.split('/')[1] === mk))
+          .map((f) => ({ fileId: reg(f, 'sub'), ...subLabel(f.path) }));
+        return { v, order: mk, year: pt.year, name: pt.title + (pt.year ? ` (${pt.year})` : ''), subs };
+      });
+      // Orden: por número delante ("01 - …"), si no por año, si no por nombre
+      movies.sort((a, b) => {
+        const na = parseInt(a.order, 10), nb = parseInt(b.order, 10);
+        if (!isNaN(na) && !isNaN(nb)) return na - nb;
+        if (a.year && b.year && a.year !== b.year) return a.year - b.year;
+        return a.order.localeCompare(b.order, 'es', { numeric: true });
+      });
+      let latest = '';
+      const list = movies.map((m, i) => {
+        if ((m.v.mtime || '') > latest) latest = m.v.mtime || '';
+        return { fileId: reg(m.v, 'video'), season: 1, episode: i + 1, name: m.name, subs: m.subs };
+      });
+      titles[id] = {
+        id, type: 'series', saga: true, section, title, year, folder: key, seasons: { 1: list },
+        posterFile: imgs.poster ? reg(imgs.poster, 'image') : null,
+        backdropFile: imgs.backdrop ? reg(imgs.backdrop, 'image') : null,
+        mtime: latest,
+      };
+    } else if (kind === 'movie') {
       const main = [...videos].sort((a, b) => b.size - a.size)[0];
       const imgs = pickImages(group);
       const id = hash('movie:' + idPrefix + key);
@@ -184,12 +221,12 @@ async function enrichWithTMDB(titles, apiKey, log = () => {}) {
   for (const t of Object.values(titles)) {
     if (t.meta && t.meta.tmdbChecked) continue;
     try {
-      const kind = t.type === 'movie' ? 'movie' : 'tv';
+      const kind = t.saga ? 'collection' : t.type === 'movie' ? 'movie' : 'tv';
       const u = new URL(`https://api.themoviedb.org/3/search/${kind}`);
       u.searchParams.set('api_key', apiKey);
       u.searchParams.set('query', t.title);
       u.searchParams.set('language', 'es-ES');
-      if (t.year) u.searchParams.set(kind === 'movie' ? 'year' : 'first_air_date_year', t.year);
+      if (t.year && kind !== 'collection') u.searchParams.set(kind === 'movie' ? 'year' : 'first_air_date_year', t.year);
       const r = await fetch(u);
       const j = await r.json();
       const hit = (j.results || [])[0];
