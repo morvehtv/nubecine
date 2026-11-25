@@ -3,6 +3,8 @@
 # Conserva tu configuración (.env), tus datos (data/) y la conexión con Jottacloud (rclone/).
 # Si solo cambia la web (diseño), no reinicia nada: las webs y apps abiertas se recargan solas.
 # Uso:  bash ~/nubecine/actualizar.sh
+# Todo va dentro de main(): bash lo lee entero antes de empezar, así puede sustituirse a sí mismo sin romperse
+main() {
 set -e
 REPO="${NUBECINE_REPO:-morvehtv/nubecine}"
 DEST="${NUBECINE_DIR:-$HOME/nubecine}"
@@ -34,3 +36,5 @@ else
 fi
 echo
 echo "Listo. NubeCine está actualizado."
+}
+main "$@"; exit $?
