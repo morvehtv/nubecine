@@ -71,7 +71,7 @@ function cardHTML(t, opts = {}) {
 }
 
 // ---------------- Navegación con mando (navegación espacial) ----------------
-function scopeEl() { return $('.player') || $('.dialog-back') || document; }
+function scopeEl() { return $('.player') || $('.dialog-back') || ($('#cat-menu') && !$('#cat-menu').hidden ? $('#cat-menu') : document); }
 function visible(el) {
   if (el.closest('[hidden]')) return false;
   const r = el.getBoundingClientRect();
@@ -134,6 +134,7 @@ function moveFocus(dir) {
 
 function handleBack() {
   const dlg = $('.dialog-back'); if (dlg) { dlg.remove(); return true; }
+  if (!$('#cat-menu').hidden) { toggleCats(false); focusEl($('#cat-btn')); return true; }
   if ($('.player .menu')) { $('.player .menu').remove(); return true; }
   if ($('.player') && window.handlePlayerBack) { window.handlePlayerBack(); return true; }
   const route = location.hash.replace(/^#/, '') || '/';
@@ -162,14 +163,41 @@ document.addEventListener('mousemove', () => $$('.focused').forEach((x) => x.cla
 // ---------------- Secciones (una por carpeta en la nube) ----------------
 const secHref = (s) => '#/s/' + encodeURIComponent(s.id);
 function drawNav() {
-  const el = $('#nav-sections'); if (!el) return;
-  el.innerHTML = (state.sections || []).map((s) => `<a href="${secHref(s)}" class="focusable" data-nav="s:${esc(s.id)}">${esc(s.name)}</a>`).join('');
+  const menu = $('#cat-menu'); if (!menu) return;
+  menu.innerHTML = (state.sections || []).map((s) => `<a href="${secHref(s)}" class="focusable" data-sec="${esc(s.id)}">${esc(s.name)}</a>`).join('');
+  $('#cat-btn').hidden = !(state.sections || []).length;
   markActive();
 }
+function toggleCats(open) {
+  const menu = $('#cat-menu'), btn = $('#cat-btn');
+  open = open ?? menu.hidden;
+  menu.hidden = !open; btn.setAttribute('aria-expanded', String(open));
+  if (open) { document.body.classList.remove('bar-hidden'); if (isTV) focusEl($('#cat-menu a.active') || $('#cat-menu a')); }
+}
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#cat-btn')) { toggleCats(); return; }
+  if (!e.target.closest('#cat-menu')) toggleCats(false);
+});
+// La cabecera se esconde al bajar y aparece al subir (o al llevar el foco a ella)
+(() => {
+  let lastY = 0;
+  window.addEventListener('scroll', () => {
+    const y = window.scrollY;
+    if (!$('#cat-menu').hidden) { lastY = y; return; }
+    if (y > lastY + 6 && y > 120) document.body.classList.add('bar-hidden');
+    else if (y < lastY - 6 || y < 60) document.body.classList.remove('bar-hidden');
+    lastY = y;
+  }, { passive: true });
+  document.addEventListener('focusin', (e) => { if (e.target.closest && e.target.closest('#topbar, #cat-menu')) document.body.classList.remove('bar-hidden'); });
+})();
 function markActive() {
   const [, seg, arg] = (location.hash.replace(/^#/, '') || '/').split('/');
   const key = seg === 's' ? 's:' + decodeURIComponent(arg || '') : seg === 'peliculas' ? 's:Peliculas' : seg === 'series' ? 's:Series' : (seg || 'home');
   $$('#topbar nav a').forEach((x) => x.classList.toggle('active', x.dataset.nav === key));
+  const sec = key.startsWith('s:') ? (state.sections || []).find((x) => 's:' + x.id === key) : null;
+  const btn = $('#cat-btn');
+  if (btn) { btn.classList.toggle('active', !!sec); $('#cat-label').textContent = sec ? sec.name : 'Categorías'; }
+  $$('#cat-menu a').forEach((x) => x.classList.toggle('active', !!sec && x.dataset.sec === sec.id));
 }
 async function loadCatalog() {
   const c = state.catalog = await api('/api/catalog');
@@ -185,6 +213,7 @@ window.addEventListener('hashchange', () => { state.depth++; render(); });
 
 async function render() {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
+  toggleCats(false); document.body.classList.remove('bar-hidden');
   state.playerKeys = null;
   const path = location.hash.replace(/^#/, '') || '/';
   const [, seg, arg] = path.split('/');

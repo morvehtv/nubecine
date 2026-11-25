@@ -14,13 +14,14 @@
     <a href="#/" class="brand focusable" id="brand"><span class="brand-mark"></span><span id="brand-name">NubeCine</span></a>
     <nav>
       <a href="#/" class="focusable" data-nav="home">Inicio</a>
-      <span id="nav-sections" style="display:contents"></span>
+      <button type="button" class="focusable cat-btn" id="cat-btn" data-nav="cats" aria-haspopup="true" aria-expanded="false" hidden><span id="cat-label">Categorías</span> <span class="caret">▾</span></button>
       <a href="#/mi-lista" class="focusable" data-nav="mi-lista">Mi lista</a>
       <a href="#/buscar" class="focusable" data-nav="buscar">Buscar</a>
       <a href="#/admin" class="focusable" data-nav="admin" id="nav-admin" hidden>Admin</a>
     </nav>
     <a href="#/cuenta" class="focusable account" id="account-btn" aria-label="Cuenta"></a>
   </header>
+  <div id="cat-menu" class="cat-menu" hidden></div>
   <main id="app" tabindex="-1"></main>
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>
