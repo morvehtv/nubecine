@@ -607,7 +607,8 @@ async function renderPlayer(fileId) {
   // elegida ("modo pista"): ese vídeo empieza en 'offset', así que el tiempo real es offset + currentTime.
   let mode = 'direct', offset = 0, audioN = null;
   const audios = info.audio || [];
-  const browserDefault = Math.max(0, audios.findIndex((a) => a.default));
+  // Chrome/Firefox reproducen siempre la PRIMERA pista del archivo (aunque otra esté marcada como principal)
+  const browserDefault = 0;
   const canNativeSwitch = () => !!(v.audioTracks && v.audioTracks.length > 1);
   const canRemux = () => audios.length > 1 && info.duration > 0;
   const cur = () => offset + (v.currentTime || 0);
