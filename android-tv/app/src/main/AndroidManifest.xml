@@ -3,6 +3,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Para que la app aparezca en Android TV / Fire TV y también se pueda instalar en otros dispositivos -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -28,6 +29,17 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Para entregar al instalador de Android las actualizaciones descargadas -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
 
         <!-- Reproductor nativo (ExoPlayer) a pantalla completa -->
         <activity

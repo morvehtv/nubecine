@@ -50,6 +50,8 @@ class MainActivity : Activity() {
         if (url == null) askForServer() else openWeb(url)
     }
 
+    private val updater by lazy { Updater(this) }
+
     // ---------- Primera configuración: dirección del servidor ----------
     private fun askForServer(current: String = "") {
         val input = EditText(this).apply {
@@ -200,6 +202,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         web?.onResume()
+        updater.checkInBackground() // busca y descarga actualizaciones de la app
     }
 
     override fun onDestroy() {

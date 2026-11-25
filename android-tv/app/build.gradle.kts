@@ -7,6 +7,8 @@ plugins {
 // Déjala vacía ("") para que la app la pregunte la primera vez.
 // También se puede pasar al compilar: gradle assembleDebug -PserverUrl=https://tu-dominio.com
 val serverUrl: String = (project.findProperty("serverUrl") as String?) ?: ""
+// Repositorio de GitHub del que la app descarga sus actualizaciones ("usuario/repositorio"; vacío = desactivado)
+val updateRepo: String = (project.findProperty("updateRepo") as String?) ?: "morvehtv/nubecine"
 val buildNumber: Int = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
 
 android {
@@ -20,6 +22,7 @@ android {
         versionCode = buildNumber
         versionName = "1.$buildNumber"
         buildConfigField("String", "SERVER_URL", "\"$serverUrl\"")
+        buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
     }
 
     // Firma fija: permite instalar actualizaciones encima sin desinstalar la app
@@ -55,4 +58,6 @@ dependencies {
     // Reproductor nativo
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
+    // Actualizaciones automáticas
+    implementation("androidx.core:core:1.13.1")
 }
