@@ -10,7 +10,7 @@
   --danger: #ff6b6b;
   --radius: 10px;
   --pad: clamp(16px, 4vw, 56px);
-  --card-w: clamp(118px, 13vw, 210px);
+  --card-w: clamp(104px, 10.5vw, 168px);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   color-scheme: dark;
 }
@@ -32,7 +32,8 @@ body.has-topbar { padding-top: var(--topbar-h, 64px); }
   -webkit-backdrop-filter: blur(10px);
   display: flex; align-items: center; gap: 28px;
   padding: 14px var(--pad);
-  background: linear-gradient(to bottom, rgba(10,12,16,.96), rgba(10,12,16,.72));
+  background: rgba(10,12,16,.97);
+  box-shadow: 0 6px 18px rgba(0,0,0,.35);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid rgba(255,255,255,.04);
 }
@@ -103,19 +104,19 @@ body.has-topbar { padding-top: var(--topbar-h, 64px); }
 /* ---------- Filas ---------- */
 .row { margin: 18px 0 26px; }
 .row h2 { font-size: 19px; margin: 0 var(--pad) 12px; letter-spacing: -.01em; }
-.row-track { display: flex; gap: 12px; overflow-x: auto; padding: 6px var(--pad) 14px; scroll-padding: 0 var(--pad); scrollbar-width: none; }
+.row-track { display: flex; gap: 10px; overflow-x: auto; padding: 6px var(--pad) 14px; scroll-padding: 0 var(--pad); scrollbar-width: none; }
 .row-track::-webkit-scrollbar { display: none; }
 
 .card { flex: none; width: var(--card-w); border-radius: var(--radius); cursor: pointer; position: relative; }
 .card .poster { aspect-ratio: 2/3; border-radius: var(--radius); overflow: hidden; background: var(--bg-3); position: relative; }
 .card .poster img { width: 100%; height: 100%; object-fit: cover; }
-.card .label { font-size: 14px; font-weight: 600; margin-top: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .label { font-size: 13px; font-weight: 600; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .sublabel { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .card:focus-visible, .card.focused { transform: scale(1.05); z-index: 2; }
 @media (hover: hover) { .card:hover { transform: scale(1.05); z-index: 2; } }
 .card:focus-visible .poster, .card.focused .poster { box-shadow: 0 0 0 3px var(--accent), 0 12px 30px rgba(0,0,0,.5); }
 .card:focus-visible, .card.focused { box-shadow: none; }
-.card.wide { width: calc(var(--card-w) * 1.6); }
+.card.wide { width: calc(var(--card-w) * 1.75); }
 .card.wide .poster { aspect-ratio: 16/9; }
 .badge { position: absolute; top: 8px; left: 8px; background: rgba(10,12,16,.8); font-size: 11px; font-weight: 800; padding: 3px 7px; border-radius: 5px; letter-spacing: .04em; }
 .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(255,255,255,.18); }
@@ -126,7 +127,7 @@ body.has-topbar { padding-top: var(--topbar-h, 64px); }
 /* ---------- Rejillas ---------- */
 .page { padding: 28px var(--pad); }
 .page h1 { font-size: 30px; margin: 0 0 20px; letter-spacing: -.02em; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card-w), 1fr)); gap: 22px 14px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card-w), 1fr)); gap: 18px 12px; }
 .grid .card { width: auto; }
 .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 22px; }
 .chip { padding: 8px 14px; border-radius: 99px; background: var(--bg-3); border: 0; cursor: pointer; font-weight: 600; font-size: 14px; color: var(--muted); }
@@ -203,7 +204,7 @@ body.tv .center-btn { display: none; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
 /* ---------- Modo TV (se activa en la app de Android TV o en pantallas grandes con mando) ---------- */
-body.tv { --card-w: 220px; font-size: 18px; }
+body.tv { --card-w: 176px; font-size: 18px; }
 body.tv #topbar nav a { font-size: 19px; padding: 10px 16px; }
 body.tv .btn { font-size: 19px; padding: 14px 26px; }
 body.tv .hero h1 { font-size: 64px; }
@@ -211,6 +212,11 @@ body.tv .card.focused { transform: scale(1.08); }
 body.tv * { cursor: none; }
 
 @media (max-width: 640px) {
+  :root { --card-w: calc((100vw - 2 * var(--pad) - 20px) / 3.35); }
+  .grid { grid-template-columns: repeat(3, 1fr); gap: 14px 10px; }
+  .card .label { font-size: 12px; }
+  .card .sublabel { font-size: 11px; }
+  .row h2 { font-size: 17px; }
   .controls { gap: 6px; flex-wrap: wrap; }
   .controls .time { font-size: 13px; }
   .icon-btn { width: 42px; height: 42px; }
