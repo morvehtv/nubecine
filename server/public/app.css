@@ -107,7 +107,8 @@ img { display: block; }
 .card .poster img { width: 100%; height: 100%; object-fit: cover; }
 .card .label { font-size: 14px; font-weight: 600; margin-top: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .sublabel { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.card:hover, .card:focus-visible, .card.focused { transform: scale(1.05); z-index: 2; }
+.card:focus-visible, .card.focused { transform: scale(1.05); z-index: 2; }
+@media (hover: hover) { .card:hover { transform: scale(1.05); z-index: 2; } }
 .card:focus-visible .poster, .card.focused .poster { box-shadow: 0 0 0 3px var(--accent), 0 12px 30px rgba(0,0,0,.5); }
 .card:focus-visible, .card.focused { box-shadow: none; }
 .card.wide { width: calc(var(--card-w) * 1.6); }
@@ -148,18 +149,24 @@ img { display: block; }
 .player video { width: 100%; height: 100%; background: #000; }
 .player video::cue { background: rgba(0,0,0,.6); font-size: clamp(18px, 2.6vw, 34px); }
 .ui { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between; transition: opacity .25s; background: linear-gradient(to bottom, rgba(0,0,0,.7), transparent 22%, transparent 70%, rgba(0,0,0,.85)); }
-.player.idle .ui { opacity: 0; cursor: none; }
+.player.idle .ui { opacity: 0; pointer-events: none; }
+.player.idle { cursor: none; }
 .ui-top { display: flex; align-items: center; gap: 16px; padding: 20px var(--pad); }
 .ui-top .t { font-size: 20px; font-weight: 800; }
 .ui-top .s { color: var(--muted); font-size: 14px; }
 .ui-bottom { padding: 0 var(--pad) 28px; }
-.seek { position: relative; height: 22px; cursor: pointer; display: flex; align-items: center; }
+.seek { position: relative; height: 30px; cursor: pointer; display: flex; align-items: center; touch-action: none; }
 .seek .track { position: absolute; left: 0; right: 0; height: 5px; background: rgba(255,255,255,.25); border-radius: 3px; overflow: hidden; }
 .seek .buf { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(255,255,255,.3); }
 .seek .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
 .seek .knob { position: absolute; width: 15px; height: 15px; border-radius: 50%; background: var(--accent); transform: translateX(-50%); }
 .seek.focused .track, .seek:focus-visible .track { height: 8px; }
 .seek:focus-visible, .seek.focused { box-shadow: none; }
+.ui-center { flex: 1; display: grid; place-items: center; }
+.center-btn { width: 76px; height: 76px; border-radius: 50%; border: 0; background: rgba(0,0,0,.45); color: #fff; display: grid; place-items: center; cursor: pointer; backdrop-filter: blur(4px); }
+.center-btn svg { width: 34px; height: 34px; }
+body.tv .center-btn { display: none; }
+@media (hover: hover) and (pointer: fine) { .center-btn { display: none; } }
 .controls { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
 .controls .time { font-variant-numeric: tabular-nums; color: #d6dae3; font-size: 14px; margin-right: auto; margin-left: 6px; }
 .icon-btn { width: 46px; height: 46px; border-radius: 50%; border: 0; background: rgba(255,255,255,.08); display: grid; place-items: center; cursor: pointer; }
@@ -200,6 +207,10 @@ body.tv .card.focused { transform: scale(1.08); }
 body.tv * { cursor: none; }
 
 @media (max-width: 640px) {
+  .controls { gap: 6px; flex-wrap: wrap; }
+  .controls .time { font-size: 13px; }
+  .icon-btn { width: 42px; height: 42px; }
+  .ui-top .t { font-size: 17px; }
   #topbar { gap: 12px; padding: 10px 14px; }
   #topbar nav { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   #brand-name { display: none; }

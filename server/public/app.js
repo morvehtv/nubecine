@@ -401,6 +401,7 @@ async function renderPlayer(fileId) {
         <button class="icon-btn focusable" id="p-back" aria-label="Volver">${ICON.back}</button>
         <div><div class="t">${esc(info.title)}</div><div class="s">${esc(sub)}</div></div>
       </div>
+      <div class="ui-center"><button class="center-btn" id="p-center" aria-label="Reproducir/Pausar">${ICON.pause}</button></div>
       <div class="ui-bottom">
         <div class="seek focusable" id="seek" tabindex="0" role="slider" aria-label="Posición">
           <div class="track"><div class="buf" id="buf"></div><div class="fill" id="fill"></div></div><div class="knob" id="knob"></div>
@@ -412,7 +413,7 @@ async function renderPlayer(fileId) {
           <span class="time" id="time">0:00 / 0:00</span>
           ${info.next ? `<button class="btn small focusable" id="p-next">${ICON.next} Siguiente</button>` : ''}
           ${(info.subs || []).length ? `<button class="icon-btn focusable" id="p-cc" aria-label="Subtítulos">${ICON.cc}</button>` : ''}
-          ${!isTV ? `<button class="icon-btn focusable" id="p-full" aria-label="Pantalla completa">${ICON.full}</button>` : ''}
+          ${!isTV && !window.NubeTV ? `<button class="icon-btn focusable" id="p-full" aria-label="Pantalla completa">${ICON.full}</button>` : ''}
         </div>
       </div>
     </div></div>`;
@@ -450,8 +451,8 @@ async function renderPlayer(fileId) {
     if (v.buffered.length && d) $('#buf').style.width = (v.buffered.end(v.buffered.length - 1) / d * 100) + '%';
     if (Date.now() - lastSave > 10000) save();
   });
-  v.addEventListener('play', () => { $('#p-play').innerHTML = ICON.pause; wake(); });
-  v.addEventListener('pause', () => { $('#p-play').innerHTML = ICON.play; player.classList.remove('idle'); save(); });
+  v.addEventListener('play', () => { $('#p-play').innerHTML = ICON.pause; $('#p-center').innerHTML = ICON.pause; wake(); });
+  v.addEventListener('pause', () => { $('#p-play').innerHTML = ICON.play; $('#p-center').innerHTML = ICON.play; player.classList.remove('idle'); save(); });
   v.addEventListener('waiting', () => { $('#spin').hidden = false; });
   v.addEventListener('playing', () => { $('#spin').hidden = true; });
   v.addEventListener('canplay', () => { $('#spin').hidden = true; });
@@ -484,14 +485,39 @@ async function renderPlayer(fileId) {
     m.onclick = (e) => { const b = e.target.closest('button'); if (b) { setSub(+b.dataset.i); m.remove(); focusEl($('#p-cc')); } };
     $('.ui', player).appendChild(m); focusEl($('button', m));
   };
+  $('#p-center').onclick = toggle;
+
+  // Barra de progreso: tocar o arrastrar (ratón y dedo)
   const seek = $('#seek');
-  seek.addEventListener('click', (e) => {
-    const r = seek.getBoundingClientRect();
-    if (isFinite(v.duration)) v.currentTime = ((e.clientX - r.left) / r.width) * v.duration; wake();
-  });
-  player.addEventListener('mousemove', wake);
-  player.addEventListener('click', (e) => { if (e.target === v || e.target.classList.contains('ui')) toggle(); });
-  player.addEventListener('dblclick', (e) => { if (e.target === v || e.target.classList.contains('ui')) $('#p-full')?.click(); });
+  let dragging = false;
+  const seekPct = (e) => { const r = seek.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)); };
+  const preview = (pct) => {
+    $('#fill').style.width = pct * 100 + '%'; $('#knob').style.left = pct * 100 + '%';
+    if (isFinite(v.duration)) $('#time').textContent = fmtTime(pct * v.duration) + ' / ' + fmtTime(v.duration);
+  };
+  seek.addEventListener('pointerdown', (e) => { dragging = true; seek.setPointerCapture(e.pointerId); preview(seekPct(e)); wake(); e.preventDefault(); });
+  seek.addEventListener('pointermove', (e) => { if (dragging) { preview(seekPct(e)); wake(); } });
+  const endDrag = (e) => { if (!dragging) return; dragging = false; if (isFinite(v.duration)) v.currentTime = seekPct(e) * v.duration; wake(); };
+  seek.addEventListener('pointerup', endDrag);
+  seek.addEventListener('pointercancel', () => { dragging = false; });
+
+  // Toques en la pantalla:
+  //  - con los controles ocultos, el primer toque solo los muestra (no pulsa nada)
+  //  - con el dedo, tocar el fondo oculta/muestra los controles; con el ratón, pausa/reanuda
+  let swallowClick = false, lastPointer = 'mouse';
+  player.addEventListener('pointerdown', (e) => {
+    lastPointer = e.pointerType || 'mouse';
+    if (player.classList.contains('idle')) { swallowClick = true; wake(); }
+  }, true);
+  player.addEventListener('click', (e) => {
+    if (swallowClick) { swallowClick = false; e.stopPropagation(); e.preventDefault(); return; }
+    const bg = e.target === v || e.target.classList.contains('ui') || e.target.classList.contains('ui-center') || e.target.classList.contains('ui-top') || e.target.classList.contains('ui-bottom');
+    if (!bg) return;
+    if (lastPointer === 'mouse') toggle();
+    else if (!v.paused) { clearTimeout(idleT); player.classList.add('idle'); }
+  }, true);
+  player.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') wake(); });
+  player.addEventListener('dblclick', (e) => { if (lastPointer === 'mouse' && (e.target === v || e.target.classList.contains('ui'))) $('#p-full')?.click(); });
 
   // Teclado / mando a distancia
   state.playerKeys = (e) => {
