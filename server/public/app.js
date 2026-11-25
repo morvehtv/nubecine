@@ -608,7 +608,7 @@ async function renderPlayer(fileId) {
   // ---- Pistas de audio ----
   // Safari cambia de pista él solo. En Chrome/Firefox el servidor prepara el vídeo con la pista
   // elegida ("modo pista"): ese vídeo empieza en 'offset', así que el tiempo real es offset + currentTime.
-  let mode = 'direct', offset = 0, audioN = null;
+  let mode = 'direct', offset = 0, audioN = null, seekToken = 0;
   const audios = info.audio || [];
   // Chrome/Firefox reproducen siempre la PRIMERA pista del archivo (aunque otra esté marcada como principal)
   const browserDefault = 0;
@@ -634,9 +634,27 @@ async function renderPlayer(fileId) {
       v.src = '/stream/' + fileId;
       v.addEventListener('loadedmetadata', () => { v.currentTime = at; shiftSubs(); }, { once: true });
     } else {
-      mode = 'remux'; audioN = n; offset = Math.max(0, at);
-      v.src = `/stream/${fileId}/audio/${n}?t=${offset.toFixed(1)}`;
-      shiftSubs();
+      // El vídeo solo puede empezar en un fotograma clave: se pregunta cuál es y se ajusta el tiempo
+      mode = 'remux'; audioN = n;
+      const want = Math.max(0, at), token = ++seekToken;
+      $('#spin').hidden = false;
+      api(`/api/seek/${fileId}?t=${want.toFixed(2)}`).catch(() => ({ start: want })).then(({ start }) => {
+        if (token !== seekToken) return;
+        offset = start;
+        v.src = `/stream/${fileId}/audio/${n}?t=${start.toFixed(3)}`;
+        shiftSubs();
+        // Avanza hasta el segundo pedido en cuanto haya datos
+        const gap = want - start;
+        if (gap > 0.4) {
+          const jump = () => {
+            if (token !== seekToken) return v.removeEventListener('progress', jump);
+            const b = v.buffered; if (b.length && b.end(b.length - 1) > gap + 0.5) { v.currentTime = gap; v.removeEventListener('progress', jump); }
+          };
+          v.addEventListener('progress', jump);
+        }
+        if (playing) v.play().catch(() => {});
+      });
+      return;
     }
     $('#spin').hidden = false;
     if (playing) v.play().catch(() => {});

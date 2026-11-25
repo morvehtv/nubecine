@@ -430,6 +430,22 @@ async function pipeFile(req, res, fileId, kinds) {
   }
 }
 route('GET', '/stream/:fileId', { auth: true }, (req, res, p) => pipeFile(req, res, p.fileId, ['video']));
+// Punto real de arranque: el fotograma clave en o antes de t (el vídeo solo puede empezar ahí)
+route('GET', '/api/seek/:fileId', { auth: true }, (req, res, p) => {
+  const f = D.files[p.fileId];
+  if (!f || f.kind !== 'video') return fail(res, 404, 'No encontrado');
+  const t = Math.max(0, parseFloat(new URL(req.url, 'http://x').searchParams.get('t')) || 0);
+  if (t < 0.5) return send(res, 200, { start: 0 });
+  execFileProbe(['-v', 'error', '-rw_timeout', '20000000', '-select_streams', 'v:0', '-read_intervals', `${t}%+#1`,
+    '-show_entries', 'packet=pts_time', '-of', 'csv=p=0', storage.probeUrl(f.root, f.path)], (err, out) => {
+    const k = parseFloat(String(out || '').trim().split('\n')[0]);
+    send(res, 200, { start: !err && isFinite(k) && k >= 0 && k <= t + 0.5 ? k : t });
+  });
+});
+function execFileProbe(args, cb) {
+  require('child_process').execFile('ffprobe', args, { timeout: 20000, maxBuffer: 1 << 20 }, cb);
+}
+
 // Vídeo con otra pista de audio, preparado al vuelo con ffmpeg (el archivo original no se toca).
 // /stream/ID/audio/N?t=SEGUNDOS  -> MP4 fragmentado que empieza en ese segundo
 const remuxing = new Map(); // userId -> proceso ffmpeg (uno por usuario)
@@ -440,11 +456,17 @@ route('GET', '/stream/:fileId/audio/:n', { auth: true }, (req, res, p, user) => 
   if (!f || f.kind !== 'video' || !m || !(n >= 0 && n < (m.audio || []).length)) return fail(res, 404, 'No encontrado');
   const t = Math.max(0, parseFloat(new URL(req.url, 'http://x').searchParams.get('t')) || 0);
   const prev = remuxing.get(user.id); if (prev) prev.kill('SIGKILL');
+  // Desde el principio se conservan los tiempos originales con una "edit list" (si no, la imagen
+  // de HEVC/H.264 con fotogramas B sale unas décimas tarde respecto al audio).
+  // Desde otro punto, t es un fotograma clave (lo calcula /api/seek) y las pistas salen alineadas.
+  const fromStart = t < 0.05;
   const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-rw_timeout', '30000000',
-    '-ss', String(t), '-i', storage.probeUrl(f.root, f.path),
+    ...(fromStart ? [] : ['-ss', String(t)]), '-i', storage.probeUrl(f.root, f.path),
     '-map', '0:v:0', '-map', `0:a:${n}`, '-sn', '-dn',
     '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
-    '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-f', 'mp4', 'pipe:1'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ...(fromStart ? ['-movflags', 'frag_keyframe+delay_moov+default_base_moof', '-use_editlist', '1']
+                  : ['-movflags', 'frag_keyframe+empty_moov+default_base_moof']),
+    '-f', 'mp4', 'pipe:1'], { stdio: ['ignore', 'pipe', 'pipe'] });
   remuxing.set(user.id, ff);
   let err = '';
   ff.stderr.on('data', (d) => { err = (err + d).slice(-500); });
