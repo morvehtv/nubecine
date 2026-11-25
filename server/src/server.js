@@ -26,7 +26,7 @@ const cfg = {
   inviteCode: '',
   tmdbApiKey: '',
   dataFile: './data/db.json',
-  autoScanMinutes: 5,
+  autoScanMinutes: 1,
   ...fileCfg,
 };
 for (const [k, env] of Object.entries({
@@ -204,12 +204,52 @@ function audioInfo(fileId) {
   return { audio: m.audio.map((a, i) => ({ n: i, label: audioLabel(a), lang: a.lang, title: a.title, codec: a.codec, default: a.default })), prefAudio: m.pref };
 }
 
+// ---------- Tiempo real: avisos a las webs/apps abiertas (Server-Sent Events) ----------
+const liveClients = new Set();
+function broadcast(event, data) {
+  const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const c of liveClients) { try { c.write(msg); } catch {} }
+}
+// Firma del catálogo: cambia si hay títulos nuevos, borrados o con otros datos (carátulas, nombres…)
+function catalogSignature() {
+  const all = Object.values(D.titles).map((t) => JSON.stringify([view(t), t.type === 'series' ? Object.values(t.seasons).flat().map((e) => e.fileId) : t.fileId, !!(t.edited && t.edited.hidden)])).sort();
+  return crypto.createHash('sha1').update(all.join('|') + JSON.stringify(D.sections || [])).digest('hex');
+}
+function catalogChanged(addedIds = []) {
+  const sig = catalogSignature();
+  if (sig === D.catalogSig) return;
+  D.catalogSig = sig;
+  D.catalogVersion = (D.catalogVersion || 0) + 1;
+  db.save();
+  const added = addedIds.map((id) => D.titles[id]).filter((t) => t && !(t.edited && t.edited.hidden)).map((t) => view(t).title);
+  broadcast('catalog', { version: D.catalogVersion, added: added.slice(0, 5), addedCount: added.length });
+}
+// Versión de la web: huella de los archivos de public/. Si cambian (actualización), las webs abiertas se recargan.
+let webVersion = '';
+function computeWebVersion() {
+  const h = crypto.createHash('sha1');
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const f = path.join(dir, e.name);
+      if (e.isDirectory()) walk(f); else { h.update(e.name); h.update(fs.readFileSync(f)); }
+    }
+  };
+  try { walk(path.join(ROOT, 'public')); } catch {}
+  return h.digest('hex').slice(0, 12);
+}
+webVersion = computeWebVersion();
+setInterval(() => {
+  const v = computeWebVersion();
+  if (v !== webVersion) { webVersion = v; log('Web actualizada: versión', v); broadcast('version', { version: v }); }
+}, 15000).unref();
+
 let scanning = null;
 async function scan() {
   if (scanning) return scanning;
   scanning = (async () => {
     const t0 = Date.now();
     const all = await storage.list(cfg.libraryPath);
+    const before = new Set(Object.keys(D.titles));
     const fresh = buildLibrary(all, cfg.libraryPath);
     D.titles = mergeCatalog(D.titles, fresh.titles);
     D.files = fresh.files;
@@ -218,6 +258,7 @@ async function scan() {
     D.lastScan = { at: new Date().toISOString(), ms: Date.now() - t0, files: all.length, sections: fresh.sections.length, titles: Object.keys(D.titles).length, enriched };
     db.save();
     log('Escaneo completado:', JSON.stringify(D.lastScan));
+    catalogChanged(Object.keys(D.titles).filter((id) => !before.has(id)));
     probeAll().catch((e) => log('Análisis de audio falló:', e.message));
     return D.lastScan;
   })().finally(() => { scanning = null; });
@@ -274,6 +315,14 @@ route('POST', '/api/logout', (req, res) => {
   const token = cookies(req).sid; if (token) { delete D.sessions[token]; db.save(); }
   res.setHeader('Set-Cookie', 'sid=; Path=/; Max-Age=0');
   send(res, 200, { ok: true });
+});
+
+route('GET', '/api/events', { auth: true }, (req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.write(`retry: 4000\nevent: hello\ndata: ${JSON.stringify({ version: webVersion, catalog: D.catalogVersion || 0 })}\n\n`);
+  liveClients.add(res);
+  const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 25000);
+  req.on('close', () => { clearInterval(ping); liveClients.delete(res); });
 });
 
 route('GET', '/api/me', { auth: true }, (req, res, p, user) => send(res, 200, publicUser(user)));
@@ -403,6 +452,7 @@ route('PUT', '/api/admin/title/:id', { admin: true }, async (req, res, p) => {
     else t.edited[k] = String(v).slice(0, 4000);
   }
   db.save();
+  catalogChanged();
   send(res, 200, view(t));
 });
 route('GET', '/api/admin/users', { admin: true }, (req, res) => {

@@ -206,17 +206,60 @@ async function loadCatalog() {
   return c;
 }
 
+// ---------------- Tiempo real ----------------
+// El servidor avisa cuando hay contenido nuevo (se refresca la página sin perder la posición)
+// y cuando hay una versión nueva de la web (se recarga en cuanto no estés viendo un vídeo).
+let live = null;
+const isPlaying = () => !!($('.player') || $('#ios-video'));
+function startLive() {
+  if (live || !window.EventSource) return;
+  live = new EventSource('/api/events');
+  live.addEventListener('hello', (e) => {
+    const d = JSON.parse(e.data);
+    if (state.webVersion && d.version !== state.webVersion) reloadWhenIdle();
+    state.webVersion = state.webVersion || d.version;
+    if (state.catalogVersion != null && d.catalog !== state.catalogVersion) liveRefresh({});
+    state.catalogVersion = d.catalog;
+  });
+  live.addEventListener('version', () => reloadWhenIdle());
+  live.addEventListener('catalog', (e) => { const d = JSON.parse(e.data); state.catalogVersion = d.version; liveRefresh(d); });
+}
+function stopLive() { if (live) { live.close(); live = null; } }
+function reloadWhenIdle() {
+  state.pendingReload = true;
+  if (!isPlaying() && !$('.dialog-back')) location.reload();
+}
+let refreshT = null;
+function liveRefresh(d) {
+  if (d.addedCount) toast(d.addedCount === 1 ? 'Nuevo: ' + d.added[0] : `${d.addedCount} títulos nuevos: ${d.added.slice(0, 3).join(', ')}${d.addedCount > 3 ? '…' : ''}`);
+  clearTimeout(refreshT);
+  refreshT = setTimeout(async () => {
+    const seg = (location.hash.replace(/^#/, '') || '/').split('/')[1] || '';
+    state.sections = null;
+    // No se toca nada mientras ves un vídeo, escribes o tienes un diálogo abierto
+    const typing = /input|textarea|select/i.test((document.activeElement || {}).tagName || '');
+    if (isPlaying() || $('.dialog-back') || typing || !['', 's', 'mi-lista', 't', 'peliculas', 'series'].includes(seg)) { try { await loadCatalog(); } catch {} return; }
+    const y = window.scrollY;
+    const href = document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute('href');
+    await render(true);
+    window.scrollTo(0, y);
+    if (isTV && href) { const el = $(`[href="${CSS.escape(href)}"]`); if (el) focusEl(el); }
+  }, 400);
+}
+
 // ---------------- Router ----------------
 let cleanup = null;
 function go(path) { location.hash = '#' + path; }
 window.addEventListener('hashchange', () => { state.depth++; render(); });
 
-async function render() {
+async function render(keepScroll = false) {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
   toggleCats(false); document.body.classList.remove('bar-hidden');
   state.playerKeys = null;
   const path = location.hash.replace(/^#/, '') || '/';
   const [, seg, arg] = path.split('/');
+  // Versión nueva pendiente: se aplica al salir del vídeo (o al cambiar de página)
+  if (state.pendingReload && seg !== 'ver' && !$('#ios-video')) { location.reload(); return; }
 
   if (!state.me && seg !== 'login' && seg !== 'registro') {
     try { state.me = await api('/api/me', { allow401: true }); } catch { state.me = null; }
@@ -231,7 +274,8 @@ async function render() {
   }
   if (state.me && !state.sections && seg !== 'login' && seg !== 'registro') { try { await loadCatalog(); } catch {} }
   markActive();
-  window.scrollTo(0, 0);
+  if (!keepScroll) window.scrollTo(0, 0);
+  if (state.me) startLive();
 
   try {
     switch (seg || '') {
@@ -483,7 +527,8 @@ function playIPhone(fileId) {
   const save = () => { if (v.duration && isFinite(v.duration)) { lastSave = Date.now(); api('/api/progress', { method: 'POST', body: { fileId, t: v.currentTime, d: v.duration }, keepalive: true }).catch(() => {}); } };
   const close = () => {
     if (closed) return; closed = true;
-    save(); v.pause(); setTimeout(() => v.remove(), 500);
+    save(); v.pause(); v.remove();
+    if (state.pendingReload) { location.hash = info ? '#/t/' + info.titleId : location.hash; location.reload(); return; }
     if (info) showTitle(info.titleId);
   };
   api('/api/play/' + fileId).then((i) => {
@@ -706,7 +751,7 @@ function renderAccount() {
       <div class="field"><label>Contraseña actual</label><input class="input focusable" type="password" name="current" autocomplete="current-password" required></div>
       <div class="field"><label>Nueva contraseña</label><input class="input focusable" type="password" name="next" autocomplete="new-password" minlength="6" required></div>
       <div class="error" id="err"></div><button class="btn primary focusable">Guardar</button></form></div>`;
-  $('#logout').onclick = async () => { await api('/api/logout', { method: 'POST' }); state.me = null; state.sections = null; go('/login'); };
+  $('#logout').onclick = async () => { await api('/api/logout', { method: 'POST' }); state.me = null; state.sections = null; stopLive(); go('/login'); };
   if ($('#server')) $('#server').onclick = () => window.NubeTV.changeServer();
   $('#pw').onsubmit = async (e) => {
     e.preventDefault();

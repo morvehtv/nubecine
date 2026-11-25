@@ -11,6 +11,7 @@ services:
     volumes:
       - ./rclone:/config          # aquí va rclone.conf (con tu cuenta de Jottacloud)
       - ./data:/app/data          # usuarios, catálogo y progreso
+      - ./server/public:/app/public:ro   # la web se actualiza sin reiniciar
     expose:
       - "3000"
 

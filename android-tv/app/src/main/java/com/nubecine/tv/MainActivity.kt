@@ -52,6 +52,15 @@ class MainActivity : Activity() {
 
     private val updater by lazy { Updater(this) }
 
+    // Mientras la app está abierta, busca actualizaciones cada 15 minutos
+    private val updateHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val periodicUpdate = object : Runnable {
+        override fun run() {
+            updater.checkInBackground()
+            updateHandler.postDelayed(this, 15 * 60 * 1000L)
+        }
+    }
+
     // ---------- Primera configuración: dirección del servidor ----------
     private fun askForServer(current: String = "") {
         val input = EditText(this).apply {
@@ -201,6 +210,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        updateHandler.removeCallbacks(periodicUpdate)
         CookieManager.getInstance().flush()
         web?.onPause()
     }
@@ -208,7 +218,8 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         web?.onResume()
-        updater.checkInBackground() // busca y descarga actualizaciones de la app
+        updateHandler.removeCallbacks(periodicUpdate)
+        periodicUpdate.run() // busca y descarga actualizaciones de la app
     }
 
     override fun onDestroy() {

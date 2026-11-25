@@ -29,9 +29,9 @@ class Updater(private val activity: Activity) {
     fun checkInBackground() {
         val repo = BuildConfig.UPDATE_REPO
         if (repo.isBlank()) return
-        // Como mucho una comprobación cada 30 minutos
+        // Como mucho una comprobación cada 5 minutos
         val now = System.currentTimeMillis()
-        if (now - prefs.getLong("lastUpdateCheck", 0L) < 30 * 60 * 1000L) return
+        if (now - prefs.getLong("lastUpdateCheck", 0L) < 5 * 60 * 1000L) return
         prefs.edit().putLong("lastUpdateCheck", now).apply()
 
         Thread {
