@@ -22,6 +22,8 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -47,6 +49,7 @@ class PlayerActivity : Activity() {
         const val EXTRA_START_MS = "startMs"
         const val EXTRA_SUBS = "subs"
         const val EXTRA_FILE_ID = "fileId"
+        const val EXTRA_AUDIO = "audio"
         const val RESULT_POS = "pos"
         const val RESULT_DUR = "dur"
     }
@@ -56,6 +59,7 @@ class PlayerActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private var cookie: String? = null
     private var finished = false
+    private var audioChosen = false
 
     private val saver = object : Runnable {
         override fun run() {
@@ -116,6 +120,8 @@ class PlayerActivity : Activity() {
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .build()
+        // Preferencia inicial: español
+        exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon().setPreferredAudioLanguage("es").build()
         player = exo
         playerView.player = exo
         exo.setMediaItem(item, intent.getLongExtra(EXTRA_START_MS, 0L))
@@ -126,6 +132,10 @@ class PlayerActivity : Activity() {
                 if (state == Player.STATE_ENDED) close(ended = true)
             }
 
+            override fun onTracksChanged(tracks: Tracks) {
+                if (!audioChosen) chooseCastellano(tracks)
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 Toast.makeText(this@PlayerActivity, "No se pudo reproducir el vídeo (${error.errorCodeName}). Usa MP4 H.264/AAC.", Toast.LENGTH_LONG).show()
                 close(ended = false)
@@ -133,6 +143,49 @@ class PlayerActivity : Activity() {
         })
         playerView.requestFocus()
         handler.postDelayed(saver, 15000)
+    }
+
+    /** Elige la pista de audio en castellano (una sola vez; luego el usuario puede cambiarla). */
+    private fun chooseCastellano(tracks: Tracks) {
+        val groups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+        if (groups.isEmpty()) return
+        audioChosen = true
+        if (groups.size < 2) return
+
+        val hint = try { JSONObject(intent.getStringExtra(EXTRA_AUDIO) ?: "{}") } catch (_: Exception) { JSONObject() }
+        val serverPref = if (hint.has("pref") && !hint.isNull("pref")) hint.optInt("pref", -1) else -1
+
+        val castellano = Regex("castellano|españa|espana|es-es|es_es|spain|\\bcast\\b")
+        val latino = Regex("latino|latam|latinoam|419|m[eé]xic|\\blat\\b")
+        val espanol = Regex("español|espanol|spanish")
+        fun score(i: Int): Int {
+            val f = groups[i].getTrackFormat(0)
+            val lang = (f.language ?: "").lowercase()
+            val txt = "$lang ${(f.label ?: "").lowercase()}"
+            val isEs = lang.startsWith("es") || lang.startsWith("spa") || espanol.containsMatchIn(txt) || castellano.containsMatchIn(txt)
+            return when {
+                !isEs -> 0
+                latino.containsMatchIn(txt) -> 10
+                castellano.containsMatchIn(txt) -> 100
+                else -> 50
+            }
+        }
+        val ranked = groups.indices.filter { score(it) > 0 }.sortedByDescending { score(it) }
+        // Si una pista dice claramente "castellano" manda esa; si no, la que detectó el servidor
+        val order = mutableListOf<Int>()
+        if (ranked.isNotEmpty() && score(ranked[0]) >= 100) order.add(ranked[0])
+        if (serverPref in groups.indices && serverPref !in order) order.add(serverPref)
+        ranked.forEach { if (it !in order) order.add(it) }
+        if (order.isEmpty()) return
+
+        val pick = order.firstOrNull { groups[it].isTrackSupported(0) } ?: return
+        if (pick != order[0]) {
+            Toast.makeText(this, "La pista en castellano usa un formato de audio que este dispositivo no puede reproducir. Se usa otra.", Toast.LENGTH_LONG).show()
+        }
+        val p = player ?: return
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .setOverrideForType(TrackSelectionOverride(groups[pick].mediaTrackGroup, 0))
+            .build()
     }
 
     private fun hideSystemUi() {

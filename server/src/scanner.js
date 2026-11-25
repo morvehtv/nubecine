@@ -21,7 +21,8 @@ function parseTitle(raw) {
   const years = [...(' ' + s).matchAll(/[\s(\[](19\d{2}|20\d{2})(?=[)\]\s]|$)/g)].filter((y) => y.index > 1);
   const y = years[years.length - 1];
   if (y) { year = parseInt(y[1], 10); s = s.slice(0, y.index - 1); }
-  s = s.replace(JUNK, '').replace(/[\s\-–([]+$/, '').trim();
+  const cleaned = s.replace(JUNK, '').replace(/[\s\-–([]+$/, '').trim();
+  s = cleaned || s.trim(); // nunca deja el título vacío (p. ej. "Multi Audio")
   return { title: s || raw, year };
 }
 

@@ -149,7 +149,12 @@ class MainActivity : Activity() {
 
         /** Abre el reproductor nativo (ExoPlayer) a pantalla completa. */
         @JavascriptInterface
-        fun play(url: String, title: String, startSec: Double, subsJson: String, fileId: String) = runOnUiThread {
+        fun play(url: String, title: String, startSec: Double, subsJson: String, fileId: String) =
+            playWithAudio(url, title, startSec, subsJson, fileId, "{}")
+
+        /** Igual que play(), indicando qué pista de audio es castellano (detectada por el servidor). */
+        @JavascriptInterface
+        fun playWithAudio(url: String, title: String, startSec: Double, subsJson: String, fileId: String, audioJson: String) = runOnUiThread {
             val u = Uri.parse(url)
             val base = u.scheme + "://" + u.authority
             val i = Intent(this@MainActivity, PlayerActivity::class.java)
@@ -159,6 +164,7 @@ class MainActivity : Activity() {
                 .putExtra(PlayerActivity.EXTRA_START_MS, (startSec * 1000).toLong())
                 .putExtra(PlayerActivity.EXTRA_SUBS, subsJson)
                 .putExtra(PlayerActivity.EXTRA_FILE_ID, fileId)
+                .putExtra(PlayerActivity.EXTRA_AUDIO, audioJson)
             CookieManager.getInstance().flush()
             @Suppress("DEPRECATION")
             startActivityForResult(i, REQ_PLAYER)

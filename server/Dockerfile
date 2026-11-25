@@ -1,5 +1,5 @@
 FROM node:22-alpine
-RUN apk add --no-cache rclone tini
+RUN apk add --no-cache rclone tini ffmpeg
 WORKDIR /app
 COPY package.json ./
 COPY src ./src

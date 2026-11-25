@@ -264,6 +264,7 @@ function heroHTML(t, buttons) {
         <span class="pill">${t.saga ? `Saga · ${t.episodeCount} películas` : t.type === 'series' ? `Serie · ${t.seasonCount} temporada${t.seasonCount > 1 ? 's' : ''}` : 'Película'}</span>
         ${(t.genres || []).slice(0, 3).map((g) => `<span>${esc(g)}</span>`).join('')}</div>
       ${t.overview ? `<p>${esc(t.overview)}</p>` : ''}
+      ${(t.audio || []).length ? `<div class="meta" style="margin-top:-6px">Audio: ${t.audio.map(esc).join(' · ')}</div>` : ''}
       <div class="actions">${buttons}</div>
     </div></section>`;
 }
@@ -375,7 +376,7 @@ async function renderTitle(id) {
         const pct = e.progress ? Math.min(100, Math.round(e.progress.t / (e.progress.d || 1) * 100)) : 0;
         return `<a class="episode focusable" href="#/ver/${e.fileId}"><div class="num">${e.episode}</div>
           <div><div class="name">${esc(e.name || (t.saga ? 'Película ' : 'Episodio ') + e.episode)}</div>
-          <div class="small">${t.saga ? 'Película ' + e.episode : `T${e.season} · E${e.episode}`}${e.progress?.d ? ' · ' + fmtTime(e.progress.d) : ''}</div>
+          <div class="small">${t.saga ? 'Película ' + e.episode : `T${e.season} · E${e.episode}`}${e.progress?.d ? ' · ' + fmtTime(e.progress.d) : ''}${(e.audio || []).length > 1 ? ' · ' + e.audio.map(esc).join(', ') : ''}</div>
           ${pct ? `<div class="ep-bar"><i style="width:${pct}%"></i></div>` : ''}</div>
           <span class="go">${ICON.play}</span></a>`;
       }).join('');
@@ -393,6 +394,23 @@ async function renderTitle(id) {
 // App Android (TV y móvil): ExoPlayer a pantalla completa.
 // iPhone: reproductor de iOS a pantalla completa.
 // Al salir de cualquiera de los dos se guarda el progreso y se muestra la ficha.
+// Selecciona la pista de audio preferida (castellano) cuando el navegador lo permite (Safari / iPhone)
+function selectAudio(v, info) {
+  const tracks = v.audioTracks;
+  if (!tracks || tracks.length < 2) return false;
+  let idx = info && info.prefAudio != null && info.prefAudio < tracks.length ? info.prefAudio : -1;
+  if (idx < 0) {
+    let best = 0;
+    for (let i = 0; i < tracks.length; i++) {
+      const txt = `${tracks[i].language} ${tracks[i].label}`;
+      const sc = /castellano|espa[nñ]a|es-es/i.test(txt) ? 100 : /latino|419|lat\b/i.test(txt) ? 10 : /^(es|spa)/i.test(tracks[i].language) || /espa[nñ]ol|spanish/i.test(tracks[i].label) ? 50 : 0;
+      if (sc > best) { best = sc; idx = i; }
+    }
+  }
+  if (idx < 0) return false;
+  for (let i = 0; i < tracks.length; i++) tracks[i].enabled = i === idx;
+  return true;
+}
 const hasNative = () => !!(window.NubeTV && window.NubeTV.hasNativePlayer && window.NubeTV.play);
 const isIPhone = /iPhone|iPod/.test(navigator.userAgent);
 const resumeAt = (p) => (p && p.t > 15 && p.d && p.t / p.d < 0.93 ? p.t - 3 : 0);
@@ -408,7 +426,10 @@ async function playNativeAndroid(fileId) {
     let pref = 'es'; try { pref = localStorage.getItem('subLang') || 'es'; } catch {}
     const subs = [...(info.subs || [])].sort((a, b) => (b.lang === pref) - (a.lang === pref))
       .map((s) => ({ url: location.origin + '/sub/' + s.fileId, lang: s.lang, label: s.label }));
-    window.NubeTV.play(location.origin + '/stream/' + fileId, playLabel(info), resumeAt(info.progress), JSON.stringify(pref === 'off' ? [] : subs), fileId);
+    const args = [location.origin + '/stream/' + fileId, playLabel(info), resumeAt(info.progress), JSON.stringify(pref === 'off' ? [] : subs), fileId];
+    if (window.NubeTV.playWithAudio) {
+      window.NubeTV.playWithAudio(...args, JSON.stringify({ pref: info.prefAudio, audio: (info.audio || []).map((a) => ({ label: a.label, lang: a.lang, title: a.title })) }));
+    } else window.NubeTV.play(...args);
     state.nativeTitle = info.titleId;
     if (location.hash !== '#/t/' + info.titleId) setTimeout(() => go('/t/' + info.titleId), 300);
   } catch (e) { if (e.message !== 'auth') toast(e.message); }
@@ -443,7 +464,8 @@ function playIPhone(fileId) {
       v.appendChild(tr);
     }
     const start = resumeAt(i.progress);
-    if (start) { if (v.readyState >= 1) v.currentTime = start; else v.addEventListener('loadedmetadata', () => { v.currentTime = start; }, { once: true }); }
+    const ready = () => { selectAudio(v, i); if (start) v.currentTime = start; };
+    if (v.readyState >= 1) ready(); else v.addEventListener('loadedmetadata', ready, { once: true });
   }).catch(() => {});
   v.addEventListener('timeupdate', () => { if (Date.now() - lastSave > 10000) save(); });
   v.addEventListener('pause', save);
@@ -524,6 +546,11 @@ async function renderPlayer(fileId) {
     setSub(pref === 'off' ? -1 : (info.subs || []).findIndex((s) => s.lang === pref));
     const p = info.progress;
     if (p && p.t > 15 && p.d && p.t / p.d < 0.93) { v.currentTime = p.t - 3; toast('Reanudando desde ' + fmtTime(p.t)); }
+    // Audio en castellano: Safari puede cambiar de pista; Chrome/Firefox solo reproducen la principal
+    const prefA = info.prefAudio != null ? (info.audio || [])[info.prefAudio] : null;
+    if (!selectAudio(v, info) && prefA && !prefA.default && (info.audio || []).length > 1) {
+      setTimeout(() => toast('Este vídeo tiene ' + prefA.label + ', pero el navegador reproduce la pista principal. Usa la app para oírlo en castellano.'), 2800);
+    }
   }, { once: true });
 
   v.addEventListener('timeupdate', () => {

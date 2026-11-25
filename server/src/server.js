@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const DB = require('./db');
 const { createStorage } = require('./storage');
 const { buildLibrary, mergeCatalog, enrichWithTMDB, EDITABLE } = require('./scanner');
+const { ffprobe, ffprobeAvailable, pickCastellano, audioLabel } = require('./probe');
 
 // ---------- Configuración ----------
 const ROOT = path.resolve(__dirname, '..');
@@ -166,6 +167,43 @@ function continueWatching(userId) {
   return out;
 }
 
+// ---------- Análisis de pistas de audio (castellano por defecto) ----------
+// D.media[fileId] = { key, audio: [{lang,title,codec,channels,default}], pref: ordinal|null, error? }
+let probing = false;
+async function probeAll() {
+  if (probing || !(await ffprobeAvailable())) return;
+  probing = true;
+  D.media = D.media || {};
+  try {
+    const todo = Object.entries(D.files).filter(([id, f]) => f.kind === 'video' && (!D.media[id] || D.media[id].key !== `${f.path}|${f.size}`));
+    if (todo.length) log(`Analizando audio de ${todo.length} vídeo(s)…`);
+    let n = 0;
+    const worker = async () => {
+      while (todo.length) {
+        const [id, f] = todo.shift();
+        const key = `${f.path}|${f.size}`;
+        try {
+          const audio = await ffprobe(storage.probeUrl(f.root, f.path));
+          D.media[id] = { key, audio, pref: pickCastellano(audio) };
+        } catch (e) {
+          D.media[id] = { key, audio: [], pref: null, error: String(e.message || e).slice(0, 200) };
+        }
+        if (++n % 5 === 0) db.save();
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    // Limpia análisis de vídeos que ya no existen
+    for (const id of Object.keys(D.media)) if (!D.files[id]) delete D.media[id];
+    db.save();
+    if (n) log(`Audio analizado en ${n} vídeo(s)`);
+  } finally { probing = false; }
+}
+function audioInfo(fileId) {
+  const m = (D.media || {})[fileId];
+  if (!m || !m.audio || !m.audio.length) return { audio: [], prefAudio: null };
+  return { audio: m.audio.map((a, i) => ({ n: i, label: audioLabel(a), lang: a.lang, title: a.title, codec: a.codec, default: a.default })), prefAudio: m.pref };
+}
+
 let scanning = null;
 async function scan() {
   if (scanning) return scanning;
@@ -180,6 +218,7 @@ async function scan() {
     D.lastScan = { at: new Date().toISOString(), ms: Date.now() - t0, files: all.length, sections: fresh.sections.length, titles: Object.keys(D.titles).length, enriched };
     db.save();
     log('Escaneo completado:', JSON.stringify(D.lastScan));
+    probeAll().catch((e) => log('Análisis de audio falló:', e.message));
     return D.lastScan;
   })().finally(() => { scanning = null; });
   return scanning;
@@ -257,10 +296,11 @@ route('GET', '/api/title/:id', { auth: true }, (req, res, p, user) => {
   const out = { ...view(t), inList: (D.mylist[user.id] || []).includes(t.id) };
   if (t.type === 'movie') {
     out.fileId = t.fileId; out.subs = t.subs; out.progress = prog[t.fileId] || null;
+    out.audio = audioInfo(t.fileId).audio.map((a) => a.label);
   } else {
     out.seasons = Object.keys(t.seasons).map(Number).sort((a, b) => a - b).map((s) => ({
       season: s,
-      episodes: t.seasons[s].map((e) => ({ ...e, progress: prog[e.fileId] || null })),
+      episodes: t.seasons[s].map((e) => ({ ...e, progress: prog[e.fileId] || null, audio: audioInfo(e.fileId).audio.map((a) => a.label) })),
     }));
   }
   send(res, 200, out);
@@ -279,6 +319,7 @@ route('GET', '/api/play/:fileId', { auth: true }, (req, res, p, user) => {
     fileId: p.fileId, titleId: t.id, title: view(t).title, type: t.type, saga: !!t.saga,
     season: e?.season ?? null, episode: e?.episode ?? null, episodeName: e?.name ?? null,
     subs: e ? e.subs : t.subs, progress: (D.progress[user.id] || {})[p.fileId] || null, next,
+    ...audioInfo(p.fileId),
     backdrop: view(t).backdrop,
   });
 });

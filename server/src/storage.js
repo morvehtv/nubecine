@@ -51,6 +51,7 @@ class LocalStorage {
     walk(start);
     return out;
   }
+  probeUrl(root, rel) { return this.abs(root, rel); }
   async open(root, rel, range) {
     const file = this.abs(root, rel);
     const size = fs.statSync(file).size;
@@ -103,10 +104,18 @@ class RcloneStorage {
     const json = JSON.parse(text);
     return (json.list || []).filter((x) => !x.IsDir).map((x) => ({ path: x.Path, size: x.Size, mtime: x.ModTime }));
   }
-  async open(root, rel, range) {
+  objectPath(root, rel) {
     const enc = (s) => s.split('/').map(encodeURIComponent).join('/');
     const fsName = this.fsFor(root).split('/').map((seg) => encodeURIComponent(seg).replace(/%3A/gi, ':')).join('/');
-    const url = `/[${fsName}]/${enc(rel)}`;
+    return `/[${fsName}]/${enc(rel)}`;
+  }
+  probeUrl(root, rel) {
+    const u = new URL(this.rc.href);
+    if (this.auth) { const [user, pass] = Buffer.from(this.auth.slice(6), 'base64').toString().split(':'); u.username = user; u.password = pass; }
+    return u.origin.replace('://', '://' + (u.username ? `${u.username}:${u.password}@` : '')) + this.objectPath(root, rel);
+  }
+  async open(root, rel, range) {
+    const url = this.objectPath(root, rel);
     const res = await this.request('GET', url, range ? { Range: range } : {});
     const headers = { 'Content-Type': mimeOf(rel), 'Accept-Ranges': 'bytes' };
     for (const k of ['content-length', 'content-range', 'last-modified', 'etag']) {
