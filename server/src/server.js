@@ -233,6 +233,15 @@ const route = (method, pattern, opts, handler) => {
   routes.push({ method, re, keys, handler, ...opts });
 };
 
+// Enlace corto para instalar la app (p. ej. en Downloader): http://SERVIDOR/app -> última versión en GitHub
+const APP_REPO = process.env.APP_REPO || cfg.appRepo || 'morvehtv/nubecine';
+for (const p of ['/app', '/apk', '/app.apk']) {
+  route('GET', p, (req, res) => {
+    res.writeHead(302, { Location: `https://github.com/${APP_REPO}/releases/latest/download/NubeCine.apk`, 'Cache-Control': 'no-cache' });
+    res.end();
+  });
+}
+
 route('GET', '/api/config', (req, res) => send(res, 200, { siteName: D.settings.siteName || cfg.siteName, requireInvite: !!D.settings.requireInvite }));
 
 route('POST', '/api/register', async (req, res) => {
