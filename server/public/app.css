@@ -22,10 +22,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 img { display: block; }
 [hidden] { display: none !important; }
 #app { outline: none; padding-bottom: 64px; }
+/* Hueco para la cabecera fija (su altura real la calcula app.js) */
+body.has-topbar { padding-top: var(--topbar-h, 64px); }
 
 /* ---------- Barra superior ---------- */
 #topbar {
-  position: sticky; top: 0; z-index: 20;
+  position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+  padding-top: max(14px, env(safe-area-inset-top));
+  -webkit-backdrop-filter: blur(10px);
   display: flex; align-items: center; gap: 28px;
   padding: 14px var(--pad);
   background: linear-gradient(to bottom, rgba(10,12,16,.96), rgba(10,12,16,.72));

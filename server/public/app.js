@@ -89,7 +89,8 @@ function focusEl(el) {
   }
   if (!el.closest('#topbar') && !el.closest('.player')) {
     const r = el.getBoundingClientRect();
-    if (r.top < 90 || r.bottom > innerHeight - 30) {
+    const barH = ($('#topbar') && !$('#topbar').hidden ? $('#topbar').offsetHeight : 0) + 20;
+    if (r.top < barH || r.bottom > innerHeight - 30) {
       const top = el.closest('.hero') ? 0 : scrollY + r.top - innerHeight / 2 + r.height / 2;
       scrollTo({ top, behavior: 'smooth' });
     }
@@ -194,6 +195,7 @@ async function render() {
   }
   const top = $('#topbar');
   top.hidden = !state.me || seg === 'login' || seg === 'registro' || seg === 'ver';
+  document.body.classList.toggle('has-topbar', !top.hidden);
   if (state.me) {
     $('#nav-admin').hidden = !state.me.admin;
     $('#account-btn').textContent = state.me.username[0].toUpperCase();
@@ -802,6 +804,13 @@ async function renderAdmin(tabArg) {
 }
 
 // ---------------- Arranque ----------------
+// La cabecera es fija: el contenido empieza justo debajo, aunque el menú ocupe dos líneas
+(() => {
+  const top = $('#topbar');
+  const setH = () => document.documentElement.style.setProperty('--topbar-h', top.offsetHeight + 'px');
+  if (window.ResizeObserver) new ResizeObserver(setH).observe(top); else window.addEventListener('resize', setH);
+  setH();
+})();
 async function loadConfig() {
   try {
     const c = await api('/api/config', { allow401: true });
