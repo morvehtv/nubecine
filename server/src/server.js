@@ -888,7 +888,7 @@ function serveStatic(req, res, pathname) {
   const st = fs.statSync(file);
   const etag = `"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
   const cache = /\.(png|svg|ico)$/.test(ext) ? 'public, max-age=604800' : 'no-cache';
-  if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ...SEC_HEADERS, ETag: etag, 'Cache-Control': cache }); return res.end(); }
+  if (String(req.headers['if-none-match'] || '').split(',').some((x) => x.trim().replace(/^W\//, '') === etag)) { res.writeHead(304, { ...SEC_HEADERS, ETag: etag, 'Cache-Control': cache }); return res.end(); }
   res.writeHead(200, { ...SEC_HEADERS, 'Content-Type': STATIC_MIME[ext] || 'application/octet-stream', 'Cache-Control': cache, ETag: etag, 'Content-Length': st.size });
   if (req.method === 'HEAD') return res.end();
   fs.createReadStream(file).pipe(res);
