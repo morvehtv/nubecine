@@ -473,6 +473,51 @@ async function renderTitle(id) {
 // App Android (TV y móvil): ExoPlayer a pantalla completa.
 // iPhone: reproductor de iOS a pantalla completa.
 // Al salir de cualquiera de los dos se guarda el progreso y se muestra la ficha.
+// ---------------- Compatibilidad de formatos ----------------
+// Qué sabe reproducir este aparato por sí solo. Lo que no, lo adapta el servidor.
+const CAPS = (() => {
+  const v = document.createElement('video');
+  const ok = (t) => { try { return v.canPlayType(t) !== ''; } catch { return false; } };
+  const safari = /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent) || /iPhone|iPad|iPod/.test(navigator.userAgent);
+  return {
+    safari,
+    mkv: !safari && (ok('video/x-matroska') || ok('video/webm')),   // Chrome, Edge, Firefox, Android
+    h264: ok('video/mp4; codecs="avc1.640028"'),
+    hevc: ok('video/mp4; codecs="hvc1.1.6.L120.90"') || ok('video/mp4; codecs="hev1.1.6.L120.90"'),
+    vp9: ok('video/webm; codecs="vp9"'), av1: ok('video/mp4; codecs="av01.0.08M.08"'),
+    ac3: ok('audio/mp4; codecs="ac-3"'), eac3: ok('audio/mp4; codecs="ec-3"'),
+    flac: ok('audio/flac') || ok('audio/mp4; codecs="flac"'), opus: ok('audio/webm; codecs="opus"'),
+  };
+})();
+function videoCodecOk(vd) {
+  if (!vd || !vd.codec) return true; // sin datos: se intenta tal cual
+  switch (vd.codec) {
+    case 'h264': return CAPS.h264 && !/10|12|422|444/.test(vd.pixFmt || '') && !/high 10|high 4:2:2|high 4:4:4/i.test(vd.profile || '');
+    case 'hevc': return CAPS.hevc;
+    case 'vp9': return CAPS.vp9;
+    case 'av1': return CAPS.av1;
+    case 'vp8': case 'theora': return !CAPS.safari;
+    default: return false; // mpeg4/xvid, mpeg2, wmv, vc1, rv…
+  }
+}
+function audioCodecOk(codec) {
+  switch (codec || '') {
+    case '': case 'aac': case 'mp3': return true;
+    case 'opus': return CAPS.opus;
+    case 'vorbis': return !CAPS.safari;
+    case 'flac': return CAPS.flac;
+    case 'ac3': return CAPS.ac3;
+    case 'eac3': return CAPS.eac3;
+    default: return false; // dts, truehd, pcm raros, wma…
+  }
+}
+function containerOk(info) {
+  const ext = info.ext || '';
+  if (['mp4', 'm4v', 'mov'].includes(ext)) return true;
+  if (ext === 'webm' || ext === 'mkv') return CAPS.mkv;
+  return false; // avi, ts, wmv, flv, mpg…
+}
+
 // Selecciona la pista de audio preferida (castellano) cuando el navegador lo permite (Safari / iPhone)
 function selectAudio(v, info) {
   const tracks = v.audioTracks;
@@ -523,39 +568,50 @@ window.onNativePlayerClosed = async (fileId, t, d) => {
 };
 
 function playIPhone(fileId) {
-  // Se crea y reproduce dentro del mismo toque: así iOS abre su reproductor a pantalla completa
+  // iPhone/iPad: HLS (formato nativo de Apple). El servidor elige castellano, reanuda donde ibas
+  // y convierte la imagen si hace falta. Se crea y reproduce dentro del mismo toque para que
+  // iOS abra su reproductor a pantalla completa.
   $('#ios-video')?.remove();
+  const fromStart = !!state.fromStart; state.fromStart = false;
   const v = document.createElement('video');
-  v.id = 'ios-video'; v.preload = 'auto'; v.src = '/stream/' + fileId;
+  v.id = 'ios-video'; v.preload = 'auto';
+  v.src = `/hls/${encodeURIComponent(fileId)}/index.m3u8${fromStart ? '?inicio=1&nueva=1' : ''}`;
   v.setAttribute('x-webkit-airplay', 'allow');
   v.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
   document.body.appendChild(v);
   v.play().catch(() => {});
-  let info = null, lastSave = 0, closed = false;
-  const save = () => { if (v.duration && isFinite(v.duration)) { lastSave = Date.now(); api('/api/progress', { method: 'POST', body: { fileId, t: v.currentTime, d: v.duration }, keepalive: true }).catch(() => {}); } };
+  let info = null, start = 0, lastSave = 0, closed = false;
+  const save = () => {
+    const d = (info && info.duration) || 0;
+    if (!d) return;
+    lastSave = Date.now();
+    api('/api/progress', { method: 'POST', body: { fileId, t: start + v.currentTime, d }, keepalive: true }).catch(() => {});
+  };
   const close = () => {
     if (closed) return; closed = true;
     save(); v.pause(); v.remove();
     if (state.pendingReload) { location.hash = info ? '#/t/' + info.titleId : location.hash; location.reload(); return; }
     if (info) showTitle(info.titleId);
   };
-  api('/api/play/' + fileId).then((i) => {
-    info = i;
-    for (const s of i.subs || []) {
-      const tr = document.createElement('track');
-      tr.kind = 'subtitles'; tr.src = '/sub/' + s.fileId; tr.srclang = s.lang; tr.label = s.label;
-      if (s.lang === 'es') tr.default = true;
-      v.appendChild(tr);
-    }
-    const start = resumeAt(i.progress);
-    const ready = () => { selectAudio(v, i); if (start) v.currentTime = start; };
-    if (v.readyState >= 1) ready(); else v.addEventListener('loadedmetadata', ready, { once: true });
-  }).catch(() => {});
+  api('/api/play/' + fileId).then((i) => { info = i; }).catch(() => {});
+  v.addEventListener('loadedmetadata', () => {
+    api('/api/hls-info/' + fileId).then((h) => {
+      start = h.start || 0;
+      // Subtítulos desplazados al punto donde empieza el vídeo
+      for (const sub of (info && info.subs) || []) {
+        const tr = document.createElement('track');
+        tr.kind = 'subtitles'; tr.src = '/sub/' + sub.fileId; tr.srclang = sub.lang; tr.label = sub.label;
+        if (sub.lang === 'es') tr.default = true;
+        tr.addEventListener('load', () => { for (const c of tr.track.cues || []) { c.startTime -= start; c.endTime -= start; } });
+        v.appendChild(tr);
+      }
+    }).catch(() => {});
+  }, { once: true });
   v.addEventListener('timeupdate', () => { if (Date.now() - lastSave > 10000) save(); });
   v.addEventListener('pause', save);
   v.addEventListener('webkitendfullscreen', close);
   v.addEventListener('ended', () => { try { v.webkitExitFullscreen(); } catch {} close(); });
-  v.addEventListener('error', () => { toast('No se pudo reproducir el vídeo. Usa MP4 (H.264/AAC).'); close(); });
+  v.addEventListener('error', () => { toast('No se pudo reproducir el vídeo.'); close(); });
 }
 
 // "Desde el principio": el siguiente vídeo que se abra no reanuda
@@ -626,7 +682,11 @@ async function renderPlayer(fileId) {
   // Chrome/Firefox reproducen siempre la PRIMERA pista del archivo (aunque otra esté marcada como principal)
   const browserDefault = 0;
   const canNativeSwitch = () => !!(v.audioTracks && v.audioTracks.length > 1);
-  const canRemux = () => audios.length > 1 && info.duration > 0;
+  const canRemux = () => info.duration > 0;
+  // Modo adaptado: el servidor reempaqueta (y si hace falta convierte la imagen a H.264)
+  const media = info.media || {};
+  let vmode = videoCodecOk(media.video) ? 'copy' : 'h264';
+  const directOk = (n) => n === browserDefault && containerOk(info) && vmode === 'copy' && audioCodecOk((audios[n] || {}).codec);
   const cur = () => offset + (v.currentTime || 0);
   const dur = () => (mode === 'remux' ? info.duration : (isFinite(v.duration) && v.duration ? v.duration : info.duration)) || 0;
   // Los subtítulos se desplazan para que sigan sincronizados en modo pista
@@ -642,7 +702,7 @@ async function renderPlayer(fileId) {
   for (const el of $$('track', v)) el.addEventListener('load', shiftSubs);
   const setAudio = (n, at = cur()) => {
     const playing = !(v.paused && v.currentTime > 0); // si estaba en pausa a propósito, sigue en pausa
-    if (n === browserDefault) {
+    if (directOk(n) || !canRemux()) {
       mode = 'direct'; offset = 0; audioN = null;
       v.src = '/stream/' + fileId;
       v.addEventListener('loadedmetadata', () => { v.currentTime = at; shiftSubs(); }, { once: true });
@@ -654,7 +714,7 @@ async function renderPlayer(fileId) {
       api(`/api/seek/${fileId}?t=${want.toFixed(2)}`).catch(() => ({ start: want })).then(({ start }) => {
         if (token !== seekToken) return;
         offset = start;
-        v.src = `/stream/${fileId}/audio/${n}?t=${start.toFixed(3)}`;
+        v.src = `/stream/${fileId}/audio/${n}?t=${start.toFixed(3)}${vmode === 'h264' ? '&v=h264' : ''}`;
         shiftSubs();
         // Avanza hasta el segundo pedido en cuanto haya datos
         const gap = want - start;
@@ -706,7 +766,9 @@ async function renderPlayer(fileId) {
     const startAt = resumeAt(p);
     if (startAt) toast('Reanudando desde ' + fmtTime(p.t));
     // Audio en castellano: Safari cambia la pista; en Chrome/Firefox se usa el "modo pista"
-    if (!selectAudio(v, info) && info.prefAudio != null && info.prefAudio !== browserDefault && canRemux()) setAudio(info.prefAudio, startAt);
+    const wantN = info.prefAudio != null ? info.prefAudio : 0;
+    if (selectAudio(v, info) && directOk(browserDefault)) { if (startAt) v.currentTime = startAt; }
+    else if (canRemux() && !directOk(wantN)) setAudio(wantN, startAt);
     else if (startAt) v.currentTime = startAt;
   }, { once: true });
 
@@ -722,9 +784,24 @@ async function renderPlayer(fileId) {
   v.addEventListener('waiting', () => { $('#spin').hidden = false; });
   v.addEventListener('playing', () => { $('#spin').hidden = true; });
   v.addEventListener('canplay', () => { $('#spin').hidden = true; });
+  const toCompat = (why) => {
+    if (!canRemux() || compatTried >= 2) return false;
+    compatTried++;
+    if (mode === 'remux' || why === 'sin-imagen') vmode = 'h264';
+    const n = mode === 'remux' ? audioN : (info.prefAudio != null ? info.prefAudio : 0);
+    toast(vmode === 'h264' ? 'Adaptando el vídeo a este aparato…' : 'Adaptando el formato…');
+    setAudio(n, Math.max(0, cur()));
+    return true;
+  };
+  let compatTried = 0;
   v.addEventListener('error', () => {
     $('#spin').hidden = true;
-    toast(v.error && v.error.code === 4 ? 'Este formato de vídeo no es compatible. Usa MP4 (H.264/AAC).' : 'No se pudo cargar el vídeo.');
+    if (toCompat('error')) return;
+    toast('No se pudo reproducir el vídeo en este aparato.');
+  });
+  // Suena pero no se ve (p. ej. HEVC sin soporte): se convierte la imagen
+  v.addEventListener('playing', () => {
+    setTimeout(() => { if (!v.paused && v.videoWidth === 0 && media.video) toCompat('sin-imagen'); }, 1500);
   });
   v.addEventListener('ended', () => {
     ended = true; save(true);

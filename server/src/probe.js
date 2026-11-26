@@ -37,22 +37,26 @@ function pickCastellano(audio) {
 
 function ffprobe(url, timeoutMs = 90000) {
   return new Promise((resolve, reject) => {
-    execFile('ffprobe', ['-v', 'error', '-rw_timeout', '30000000', '-select_streams', 'a',
-      '-show_entries', 'format=duration:stream=index,codec_name,channels:stream_tags=language,title,handler_name:stream_disposition=default',
-      '-of', 'json', url], { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+    execFile('ffprobe', ['-v', 'error', '-rw_timeout', '30000000',
+      '-show_entries', 'format=duration,format_name:stream=index,codec_type,codec_name,profile,pix_fmt,width,height,channels,disposition:stream_tags=language,title,handler_name:stream_disposition=default,attached_pic',
+      '-of', 'json', url], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
       if (err) return reject(err);
       try {
         const json = JSON.parse(stdout);
         const streams = json.streams || [];
-        const audio = streams.map((s) => ({
+        const tagTitle = (s) => (s.tags && (s.tags.title || (/^(sound|audio|video)handler$|core media|iso media|^$/i.test((s.tags.handler_name || '').trim()) ? '' : s.tags.handler_name.trim()))) || '';
+        const audio = streams.filter((s) => s.codec_type === 'audio').map((s) => ({
           lang: (s.tags && s.tags.language) || '',
           // En MP4 el nombre de la pista suele ir en handler_name (se ignoran los genéricos)
-          title: (s.tags && (s.tags.title || (/^(sound|audio)handler$|core media|iso media|^$/i.test((s.tags.handler_name || '').trim()) ? '' : s.tags.handler_name.trim()))) || '',
+          title: tagTitle(s),
           codec: s.codec_name || '',
           channels: s.channels || 0,
           default: !!(s.disposition && s.disposition.default),
         }));
-        resolve({ audio, duration: parseFloat((json.format || {}).duration) || 0 });
+        // Primera pista de vídeo real (no la carátula incrustada)
+        const v = streams.find((s) => s.codec_type === 'video' && !(s.disposition && s.disposition.attached_pic));
+        const video = v ? { codec: v.codec_name || '', profile: v.profile || '', pixFmt: v.pix_fmt || '', width: v.width || 0, height: v.height || 0 } : null;
+        resolve({ audio, video, duration: parseFloat((json.format || {}).duration) || 0, container: (json.format || {}).format_name || '' });
       } catch (e) { reject(e); }
     });
   });

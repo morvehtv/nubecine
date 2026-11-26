@@ -176,7 +176,7 @@ async function probeAll() {
   probing = true;
   D.media = D.media || {};
   try {
-    const todo = Object.entries(D.files).filter(([id, f]) => f.kind === 'video' && (!D.media[id] || D.media[id].key !== `${f.path}|${f.size}` || (D.media[id].duration === undefined && !D.media[id].error)));
+    const todo = Object.entries(D.files).filter(([id, f]) => f.kind === 'video' && (!D.media[id] || D.media[id].key !== `${f.path}|${f.size}` || (D.media[id].video === undefined && !D.media[id].error)));
     if (todo.length) log(`Analizando audio de ${todo.length} vídeo(s)…`);
     let n = 0;
     const worker = async () => {
@@ -184,8 +184,8 @@ async function probeAll() {
         const [id, f] = todo.shift();
         const key = `${f.path}|${f.size}`;
         try {
-          const { audio, duration } = await ffprobe(storage.probeUrl(f.root, f.path));
-          D.media[id] = { key, audio, duration, pref: pickCastellano(audio) };
+          const { audio, video, duration, container } = await ffprobe(storage.probeUrl(f.root, f.path));
+          D.media[id] = { key, audio, video, duration, container, pref: pickCastellano(audio) };
         } catch (e) {
           D.media[id] = { key, audio: [], pref: null, error: String(e.message || e).slice(0, 200) };
         }
@@ -201,12 +201,13 @@ async function probeAll() {
 }
 function audioInfo(fileId) {
   const m = (D.media || {})[fileId];
-  if (!m || !m.audio || !m.audio.length) return { audio: [], prefAudio: null, duration: (m && m.duration) || 0 };
+  const media = m ? { container: m.container || '', video: m.video || null } : null;
+  if (!m || !m.audio || !m.audio.length) return { audio: [], prefAudio: null, duration: (m && m.duration) || 0, media };
   const audio = m.audio.map((a, i) => ({ n: i, label: audioLabel(a), lang: a.lang, title: a.title, codec: a.codec, default: a.default }));
   // Si dos pistas se llaman igual, se numeran ("Castellano 2")
   const seen = {};
   for (const a of audio) { seen[a.label] = (seen[a.label] || 0) + 1; if (seen[a.label] > 1) a.label += ' ' + seen[a.label]; }
-  return { audio, prefAudio: m.pref, duration: m.duration || 0 };
+  return { audio, prefAudio: m.pref, duration: m.duration || 0, media };
 }
 
 // ---------- Tiempo real: avisos a las webs/apps abiertas (Server-Sent Events) ----------
@@ -383,6 +384,7 @@ route('GET', '/api/play/:fileId', { auth: true }, (req, res, p, user) => {
     season: e?.season ?? null, episode: e?.episode ?? null, episodeName: e?.name ?? null,
     subs: e ? e.subs : t.subs, progress: (D.progress[user.id] || {})[p.fileId] || null, next,
     ...audioInfo(p.fileId),
+    ext: (D.files[p.fileId].path.split('.').pop() || '').toLowerCase(),
     backdrop: view(t).backdrop,
   });
 });
@@ -446,6 +448,22 @@ function execFileProbe(args, cb) {
   require('child_process').execFile('ffprobe', args, { timeout: 20000, maxBuffer: 1 << 20 }, cb);
 }
 
+// ---------- Compatibilidad: argumentos de ffmpeg ----------
+// Vídeo: se copia tal cual (sin coste) o se convierte a H.264 8 bits (lo reproduce cualquier aparato).
+function videoArgs(vmode, m) {
+  if (vmode === 'h264') {
+    return ['-c:v', 'libx264', '-preset', process.env.TRANSCODE_PRESET || 'veryfast', '-crf', '21',
+      '-maxrate', '10M', '-bufsize', '20M', '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-level', '4.1',
+      '-vf', "scale='min(1920,iw)':-2", '-g', '48', '-sc_threshold', '0'];
+  }
+  const hevc = m && m.video && m.video.codec === 'hevc';
+  return ['-c:v', 'copy', ...(hevc ? ['-tag:v', 'hvc1'] : [])];
+}
+// Audio: siempre AAC estéreo (compatible con todo)
+const audioArgs = ['-c:a', 'aac', '-b:a', '192k', '-ac', '2'];
+let transcodes = 0; // conversiones de imagen en marcha (usan CPU)
+const MAX_TRANSCODES = parseInt(process.env.MAX_TRANSCODES || '2', 10);
+
 // Vídeo con otra pista de audio, preparado al vuelo con ffmpeg (el archivo original no se toca).
 // /stream/ID/audio/N?t=SEGUNDOS  -> MP4 fragmentado que empieza en ese segundo
 const remuxing = new Map(); // userId -> proceso ffmpeg (uno por usuario)
@@ -453,8 +471,12 @@ route('GET', '/stream/:fileId/audio/:n', { auth: true }, (req, res, p, user) => 
   const f = D.files[p.fileId];
   const n = parseInt(p.n, 10);
   const m = (D.media || {})[p.fileId];
-  if (!f || f.kind !== 'video' || !m || !(n >= 0 && n < (m.audio || []).length)) return fail(res, 404, 'No encontrado');
-  const t = Math.max(0, parseFloat(new URL(req.url, 'http://x').searchParams.get('t')) || 0);
+  const audioCount = m ? (m.audio || []).length : 0;
+  if (!f || f.kind !== 'video' || !(n >= 0 && (n < audioCount || n === 0))) return fail(res, 404, 'No encontrado');
+  const q = new URL(req.url, 'http://x').searchParams;
+  const t = Math.max(0, parseFloat(q.get('t')) || 0);
+  const vmode = q.get('v') === 'h264' ? 'h264' : 'copy';
+  if (vmode === 'h264' && transcodes >= MAX_TRANSCODES) return fail(res, 503, 'El servidor está convirtiendo demasiados vídeos a la vez. Inténtalo en un momento.');
   const prev = remuxing.get(user.id); if (prev) prev.kill('SIGKILL');
   // Desde el principio se conservan los tiempos originales con una "edit list" (si no, la imagen
   // de HEVC/H.264 con fotogramas B sale unas décimas tarde respecto al audio).
@@ -462,12 +484,13 @@ route('GET', '/stream/:fileId/audio/:n', { auth: true }, (req, res, p, user) => 
   const fromStart = t < 0.05;
   const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-rw_timeout', '30000000',
     ...(fromStart ? [] : ['-ss', String(t)]), '-i', storage.probeUrl(f.root, f.path),
-    '-map', '0:v:0', '-map', `0:a:${n}`, '-sn', '-dn',
-    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
+    '-map', '0:v:0', '-map', `0:a:${n}?`, '-sn', '-dn',
+    ...videoArgs(vmode, m), ...audioArgs,
     ...(fromStart ? ['-movflags', 'frag_keyframe+delay_moov+default_base_moof', '-use_editlist', '1']
                   : ['-movflags', 'frag_keyframe+empty_moov+default_base_moof']),
     '-f', 'mp4', 'pipe:1'], { stdio: ['ignore', 'pipe', 'pipe'] });
   remuxing.set(user.id, ff);
+  if (vmode === 'h264') { transcodes++; ff.once('close', () => { transcodes--; }); }
   let err = '';
   ff.stderr.on('data', (d) => { err = (err + d).slice(-500); });
   res.writeHead(200, { ...SEC_HEADERS, 'Content-Type': 'video/mp4', 'Cache-Control': 'no-store' });
@@ -476,6 +499,92 @@ route('GET', '/stream/:fileId/audio/:n', { auth: true }, (req, res, p, user) => 
   req.on('close', stop);
   ff.on('close', (code) => { if (remuxing.get(user.id) === ff) remuxing.delete(user.id); if (code && err) log('ffmpeg:', err.trim()); res.end(); });
   ff.on('error', (e) => { log('ffmpeg no disponible:', e.message); res.end(); });
+});
+
+// ---------- HLS para iPhone/iPad ----------
+// Safari no reproduce MKV/AVI ni vídeo preparado al vuelo sin rangos: se genera HLS (formato nativo de Apple).
+// /hls/ID/index.m3u8?inicio=1  -> el servidor elige castellano, reanuda donde ibas y decide si convierte la imagen.
+const os = require('os');
+const HLS_DIR = path.join(os.tmpdir(), 'nubecine-hls');
+fs.mkdirSync(HLS_DIR, { recursive: true });
+const hlsSessions = new Map(); // sid -> {userId, fileId, dir, ff, start, n, last, vmode}
+function stopHls(sid) {
+  const h = hlsSessions.get(sid); if (!h) return;
+  try { h.ff.kill('SIGKILL'); } catch {}
+  if (h.vmode === 'h264' && !h.ended) transcodes = Math.max(0, transcodes - 1);
+  fs.rm(h.dir, { recursive: true, force: true }, () => {});
+  hlsSessions.delete(sid);
+}
+setInterval(() => { for (const [sid, h] of hlsSessions) if (Date.now() - h.last > 20 * 60 * 1000) stopHls(sid); }, 60000).unref();
+function iosVideoOk(m) {
+  const v = m && m.video; if (!v) return false;
+  if (v.codec === 'h264') return !/10|12|422|444/.test(v.pixFmt) && !/high 10|high 4:2:2|high 4:4:4/i.test(v.profile);
+  return v.codec === 'hevc';
+}
+function probeKeyframe(f, t) {
+  return new Promise((resolve) => {
+    if (t < 0.5) return resolve(0);
+    execFileProbe(['-v', 'error', '-rw_timeout', '20000000', '-select_streams', 'v:0', '-read_intervals', `${t}%+#1`,
+      '-show_entries', 'packet=pts_time', '-of', 'csv=p=0', storage.probeUrl(f.root, f.path)], (err, out) => {
+      const k = parseFloat(String(out || '').trim().split('\n')[0]);
+      resolve(!err && isFinite(k) && k >= 0 && k <= t + 0.5 ? k : t);
+    });
+  });
+}
+route('GET', '/hls/:fileId/index.m3u8', { auth: true }, async (req, res, p, user) => {
+  const f = D.files[p.fileId];
+  if (!f || f.kind !== 'video') return fail(res, 404, 'No encontrado');
+  const m = (D.media || {})[p.fileId] || null;
+  const q = new URL(req.url, 'http://x').searchParams;
+  // Sesión: una por usuario y vídeo (el reproductor vuelve a pedir la lista cada pocos segundos)
+  let sid = [...hlsSessions.keys()].find((k) => { const h = hlsSessions.get(k); return h.userId === user.id && h.fileId === p.fileId && !q.get('nueva'); });
+  if (!sid) {
+    for (const [k, h] of hlsSessions) if (h.userId === user.id) stopHls(k); // solo un vídeo por usuario
+    const prog = (D.progress[user.id] || {})[p.fileId];
+    const want = q.get('inicio') ? 0 : (prog && prog.t > 15 && prog.d && prog.t / prog.d < 0.93 ? prog.t - 3 : 0);
+    const start = await probeKeyframe(f, want);
+    const n = m && m.pref != null ? m.pref : 0;
+    let vmode = iosVideoOk(m) ? 'copy' : 'h264';
+    if (vmode === 'h264' && transcodes >= MAX_TRANSCODES) return fail(res, 503, 'El servidor está convirtiendo demasiados vídeos a la vez.');
+    sid = crypto.randomBytes(8).toString('hex');
+    const dir = path.join(HLS_DIR, sid);
+    fs.mkdirSync(dir, { recursive: true });
+    const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-rw_timeout', '30000000',
+      ...(start > 0 ? ['-ss', String(start)] : []), ...(vmode === 'copy' ? ['-readrate', '4'] : []),
+      '-i', storage.probeUrl(f.root, f.path),
+      '-map', '0:v:0', '-map', `0:a:${n}?`, '-sn', '-dn', ...videoArgs(vmode, m), ...audioArgs,
+      '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
+      '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4', '-hls_segment_filename', path.join(dir, 'seg%05d.m4s'),
+      path.join(dir, 'index.m3u8')], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const h = { userId: user.id, fileId: p.fileId, dir, ff, start, n, last: Date.now(), vmode, ended: false };
+    if (vmode === 'h264') transcodes++;
+    let err = '';
+    ff.stderr.on('data', (d) => { err = (err + d).slice(-500); });
+    ff.on('close', (code) => { if (vmode === 'h264' && !h.ended) { h.ended = true; transcodes = Math.max(0, transcodes - 1); } if (code && err) log('ffmpeg HLS:', err.trim()); });
+    hlsSessions.set(sid, h);
+  }
+  const h = hlsSessions.get(sid);
+  h.last = Date.now();
+  // Espera a que exista la lista con al menos un fragmento (máx. 25 s)
+  const list = path.join(h.dir, 'index.m3u8');
+  for (let i = 0; i < 100 && !(fs.existsSync(list) && /\.m4s/.test(fs.readFileSync(list, 'utf8'))); i++) await new Promise((r) => setTimeout(r, 250));
+  if (!fs.existsSync(list)) return fail(res, 504, 'No se pudo preparar el vídeo');
+  const body = fs.readFileSync(list, 'utf8').replace(/^(init\.mp4|seg\d+\.m4s)$/gm, `/hls/s/${sid}/$1`).replace(/URI="init\.mp4"/, `URI="/hls/s/${sid}/init.mp4"`);
+  send(res, 200, body, { 'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'no-store', 'X-Start': String(h.start) });
+});
+route('GET', '/hls/s/:sid/:file', { auth: true }, (req, res, p, user) => {
+  const h = hlsSessions.get(p.sid);
+  if (!h || h.userId !== user.id || !/^(init\.mp4|seg\d+\.m4s)$/.test(p.file)) return fail(res, 404, 'No encontrado');
+  h.last = Date.now();
+  const file = path.join(h.dir, p.file);
+  if (!fs.existsSync(file)) return fail(res, 404, 'Aún no disponible');
+  res.writeHead(200, { 'Content-Type': p.file.endsWith('.mp4') ? 'video/mp4' : 'video/iso.segment', 'Content-Length': fs.statSync(file).size, 'Cache-Control': 'private, max-age=3600' });
+  fs.createReadStream(file).pipe(res);
+});
+// Desde qué segundo empieza la sesión HLS (para guardar bien el progreso)
+route('GET', '/api/hls-info/:fileId', { auth: true }, (req, res, p, user) => {
+  const h = [...hlsSessions.values()].find((x) => x.userId === user.id && x.fileId === p.fileId);
+  send(res, 200, { start: h ? h.start : 0, active: !!h });
 });
 
 route('GET', '/img/:fileId', { auth: true }, (req, res, p) => pipeFile(req, res, p.fileId, ['image']));

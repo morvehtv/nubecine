@@ -5,7 +5,7 @@
 //  Series/     Nombre/        Temporada 1/  S01E01 - Piloto.mp4
 const crypto = require('crypto');
 
-const VIDEO = /\.(mp4|m4v|mkv|webm|mov|avi|ts)$/i;
+const VIDEO = /\.(mp4|m4v|mkv|webm|mov|avi|ts|m2ts|mts|mpg|mpeg|vob|wmv|asf|flv|f4v|3gp|ogv|divx|xvid|rm|rmvb)$/i;
 const IMAGE = /\.(jpe?g|png|webp)$/i;
 const SUB = /\.(srt|vtt)$/i;
 const JUNK = /\b(1080p|720p|2160p|4k|uhd|hdr|x26[45]|h\.?26[45]|hevc|bluray|brrip|bdrip|web-?dl|webrip|hdtv|dvdrip|aac|ac3|dts|castellano|latino|dual|vose|subs?|esp|spa|multi)\b.*$/i;
