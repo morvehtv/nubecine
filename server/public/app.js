@@ -1041,6 +1041,12 @@ async function renderAdmin(tabArg) {
         <label style="display:flex;gap:8px;align-items:center;margin:4px 0 12px"><input type="checkbox" class="focusable" name="requireInvite" ${s.requireInvite ? 'checked' : ''}> Pedir código de invitación para registrarse</label>
         <div class="field"><label>Código de invitación</label><input class="input focusable" name="inviteCode" value="${esc(s.inviteCode)}"></div>
         <button class="btn primary focusable">Guardar</button></form>
+      ${s.security ? `<div class="panel" style="max-width:560px"><h3>Seguridad</h3><p>
+        Acceso permitido desde: <b>${s.security.countries.length ? esc(s.security.countries.join(', ')) : 'todo el mundo'}</b><br>
+        ${s.security.countries.length ? (s.security.geo.loaded ? `Base de datos de países: ${s.security.geo.ranges} rangos de IP · actualizada ${new Date(s.security.geo.updated).toLocaleDateString('es-ES')}` : '⚠️ La base de datos de países aún no se ha descargado: de momento no se bloquea a nadie.') + '<br>' : ''}
+        Visitas bloqueadas por país: ${s.security.geoBlocked} · por exceso de peticiones: ${s.security.rateLimited} · IPs bloqueadas por rastreo: ${s.security.banned}<br>
+        Tu conexión: <span class="code">${esc(s.security.myIp)}</span> (${esc(s.security.myIpStatus)})${s.security.myIpStatus === 'red local' ? ' ⚠️ el servidor no ve tu IP real: la restricción por país no te afecta a ti, pero podría no funcionar para nadie' : ''}<br>
+        La web no aparece en buscadores (Google, Bing…).</p></div>` : ''}
       <div class="panel" style="max-width:560px"><h3>Nube</h3><p>Modo: <b>${s.storage === 'local' ? 'carpeta local' : 'rclone'}</b><br>
         Carpeta: <span class="code">${esc(s.remote)}${esc(s.libraryPath)}</span><br>
         Carátulas automáticas (TMDB): ${s.tmdb ? 'activadas' : 'desactivadas'}<br><br>Estos valores se cambian en <span class="code">config.json</span> del servidor.</p></div>`;

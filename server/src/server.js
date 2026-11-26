@@ -8,6 +8,7 @@ const DB = require('./db');
 const { createStorage } = require('./storage');
 const { buildLibrary, mergeCatalog, enrichWithTMDB, EDITABLE } = require('./scanner');
 const { ffprobe, ffprobeAvailable, pickCastellano, audioLabel } = require('./probe');
+const { GeoDB, Guard, normalizeIp, isPrivate } = require('./security');
 
 // ---------- Configuración ----------
 const ROOT = path.resolve(__dirname, '..');
@@ -55,6 +56,10 @@ const log = (...a) => console.log(new Date().toISOString().slice(0, 19), ...a);
 const SEC_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'same-origin',
+  'X-Frame-Options': 'DENY',
+  'X-Robots-Tag': 'noindex, nofollow, noarchive',  // que no aparezca en buscadores
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+  'Cross-Origin-Opener-Policy': 'same-origin',
   'Content-Security-Policy': "default-src 'self'; img-src 'self' https: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
 };
 function send(res, status, body, headers = {}) {
@@ -82,6 +87,16 @@ function cookies(req) {
   return out;
 }
 const isHttps = (req) => req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https';
+// IP del visitante. Solo se aceptan cabeceras de proxy si se ha indicado que hay uno delante (TRUST_PROXY=1 / cloudflare)
+const TRUST_PROXY = (process.env.TRUST_PROXY || '').toLowerCase();
+function clientIp(req) {
+  const direct = normalizeIp(req.socket.remoteAddress);
+  if (TRUST_PROXY && isPrivate(direct)) {
+    const h = TRUST_PROXY === 'cloudflare' ? req.headers['cf-connecting-ip'] : (req.headers['x-forwarded-for'] || '').split(',')[0];
+    if (h) return normalizeIp(h);
+  }
+  return direct;
+}
 
 // ---------- Usuarios y sesiones ----------
 const hashPass = (pw, salt) => crypto.scryptSync(pw, salt, 64).toString('hex');
@@ -102,7 +117,7 @@ const publicUser = (u) => ({ id: u.id, username: u.username, admin: !!u.admin })
 
 const attempts = new Map(); // ip -> {n, until}
 function tooMany(req) {
-  const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+  const ip = clientIp(req);
   const a = attempts.get(ip) || { n: 0, until: 0 };
   if (a.until > Date.now()) return true;
   a.n++; if (a.n >= 8) { a.until = Date.now() + 10 * 60 * 1000; a.n = 0; }
@@ -296,6 +311,8 @@ for (const p of ['/app', '/apk', '/app.apk']) {
   });
 }
 
+route('GET', '/robots.txt', (req, res) => send(res, 200, 'User-agent: *\nDisallow: /\n'));
+
 route('GET', '/api/config', (req, res) => send(res, 200, { siteName: D.settings.siteName || cfg.siteName, requireInvite: !!D.settings.requireInvite }));
 
 route('POST', '/api/register', async (req, res) => {
@@ -306,6 +323,7 @@ route('POST', '/api/register', async (req, res) => {
   if (String(password || '').length < 6) return fail(res, 400, 'La contraseña debe tener al menos 6 caracteres.');
   if (D.settings.requireInvite && String(inviteCode || '').trim() !== D.settings.inviteCode) return fail(res, 403, 'El código de invitación no es correcto.');
   if (D.users.some((u) => u.username.toLowerCase() === name.toLowerCase())) return fail(res, 409, 'Ese usuario ya existe.');
+  if (D.users.length && guard.count('reg:' + clientIp(req), 3, 24 * 3600 * 1000)) return fail(res, 429, 'Se han creado demasiadas cuentas desde esta conexión hoy.');
   const salt = crypto.randomBytes(16).toString('hex');
   const user = { id: crypto.randomUUID(), username: name, salt, passHash: hashPass(password, salt), admin: ADMIN_USER ? name.toLowerCase() === ADMIN_USER : D.users.length === 0, createdAt: new Date().toISOString() };
   D.users.push(user); db.save();
@@ -658,7 +676,9 @@ route('DELETE', '/api/admin/users/:id', { admin: true }, (req, res, p, me) => {
   send(res, 200, { ok: true });
 });
 route('GET', '/api/admin/settings', { admin: true }, (req, res) => {
-  send(res, 200, { adminFixed: !!ADMIN_USER, inviteCode: D.settings.inviteCode, requireInvite: !!D.settings.requireInvite, siteName: D.settings.siteName || cfg.siteName, storage: cfg.storage, remote: cfg.remote, libraryPath: cfg.libraryPath, sections: D.sections || [], moviesPath: cfg.moviesPath, seriesPath: cfg.seriesPath, tmdb: !!cfg.tmdbApiKey, lastScan: D.lastScan });
+  const myIp = clientIp(req);
+  const myIpStatus = isPrivate(myIp) ? 'red local' : !geo.info.loaded ? 'sin comprobar' : geo.allowed(myIp) ? 'España' : 'fuera de España';
+  send(res, 200, { security: { countries: GEO_COUNTRIES, geo: geo.info, ...guard.stats, bannedNow: guard.bans.size, myIp, myIpStatus }, adminFixed: !!ADMIN_USER, inviteCode: D.settings.inviteCode, requireInvite: !!D.settings.requireInvite, siteName: D.settings.siteName || cfg.siteName, storage: cfg.storage, remote: cfg.remote, libraryPath: cfg.libraryPath, sections: D.sections || [], moviesPath: cfg.moviesPath, seriesPath: cfg.seriesPath, tmdb: !!cfg.tmdbApiKey, lastScan: D.lastScan });
 });
 route('PUT', '/api/admin/settings', { admin: true }, async (req, res) => {
   const { inviteCode, siteName, requireInvite } = await readBody(req);
@@ -682,8 +702,49 @@ function serveStatic(req, res, pathname) {
 }
 
 // ---------- Servidor ----------
+// ---------- Seguridad de acceso ----------
+const GEO_COUNTRIES = (process.env.GEO_COUNTRIES ?? cfg.geoCountries ?? 'ES').toUpperCase().split(/[,\s]+/).filter((c) => /^[A-Z]{2}$/.test(c));
+const geo = new GeoDB(path.join(path.dirname(path.resolve(ROOT, cfg.dataFile)), 'geo'), GEO_COUNTRIES, log);
+const guard = new Guard();
+const SCANNER = /\.(php|asp|aspx|jsp|cgi|env|git|sql|bak|ini)(\/|$|\?)|\/wp-|\/wordpress|phpmyadmin|\/\.well-known\/(?!acme)|\/(admin|login)\.|\/cgi-bin|\/vendor\/|\/\.(git|env|aws|ssh)/i;
+function blockedPage(res, status, title, msg) {
+  res.writeHead(status, { ...SEC_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${title}</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0a0c10;color:#eef1f6;font-family:system-ui,sans-serif;text-align:center;padding:24px}h1{font-size:24px;margin:0 0 10px}p{color:#9097a6;margin:0}</style></head>
+<body><div><h1>${title}</h1><p>${msg}</p></div></body></html>`);
+}
+// Devuelve true si la petición se ha bloqueado
+function security(req, res, url) {
+  const ip = clientIp(req);
+  if (guard.banned(ip)) { res.writeHead(403, SEC_HEADERS); res.end(); return true; }
+  // Rastreadores buscando fallos (wp-login.php, .env, .git…): 5 intentos = 1 hora bloqueado
+  if (SCANNER.test(url.pathname)) {
+    if (guard.count('scan:' + ip, 5, 10 * 60 * 1000)) { guard.ban(ip, 3600 * 1000); log('IP bloqueada por rastreo:', ip); }
+    res.writeHead(404, SEC_HEADERS); res.end(); return true;
+  }
+  // Solo desde los países permitidos (España). Las IPs de la red local siempre pueden entrar.
+  if (GEO_COUNTRIES.length && geo.info.loaded && !isPrivate(ip) && !geo.allowed(ip)) {
+    guard.stats.geoBlocked++;
+    const name = D.settings.siteName || cfg.siteName;
+    if (url.pathname.startsWith('/api/')) fail(res, 403, `${name} solo está disponible en España.`);
+    else blockedPage(res, 403, `${name} solo está disponible en España`, 'Este servicio no está disponible en tu país.');
+    return true;
+  }
+  // Límite de peticiones: API 300/min, total 4000/min por IP (los vídeos hacen muchas)
+  const isApi = url.pathname.startsWith('/api/') && url.pathname !== '/api/events';
+  if ((isApi && guard.count('api:' + ip, 300, 60000)) || guard.count('all:' + ip, 4000, 60000)) {
+    guard.stats.rateLimited++;
+    res.writeHead(429, { ...SEC_HEADERS, 'Retry-After': '30', 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Demasiadas peticiones. Espera unos segundos.' }));
+    return true;
+  }
+  return false;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
+  if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  if (security(req, res, url)) return;
   try {
     for (const r of routes) {
       if (r.method !== req.method) continue;
@@ -712,6 +773,13 @@ if (require.main === module) {
     log(`${cfg.siteName} escuchando en http://localhost:${cfg.port}`);
     log(`Almacenamiento: ${cfg.storage === 'local' ? 'carpeta ' + cfg.localPath : 'rclone ' + cfg.remote + ' vía ' + cfg.rcloneUrl}`);
     log(`Código de invitación actual: ${D.settings.inviteCode}`);
+    // Base de datos de países (se actualiza cada mes)
+    if (GEO_COUNTRIES.length) {
+      geo.loadCache();
+      log(geo.info.loaded ? `Acceso solo desde: ${GEO_COUNTRIES.join(', ')} (${geo.info.ranges} rangos)` : 'Preparando la restricción por país…');
+      const upd = () => geo.update().catch((e) => log('Base de países:', e.message));
+      upd(); setInterval(upd, 24 * 3600 * 1000).unref();
+    } else log('Restricción por país desactivada (GEO_COUNTRIES vacío)');
     // Primer escaneo (reintenta mientras rclone arranca)
     const first = (n = 0) => scan().catch((e) => { log('Escaneo inicial falló:', e.message); if (n < 10) setTimeout(() => first(n + 1), 15000); });
     setTimeout(first, 1500);
