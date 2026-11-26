@@ -43,6 +43,7 @@ if (!cfg.libraryPath) cfg.libraryPath = cfg.moviesPath.split('/').slice(0, -1).j
 const db = new DB(path.resolve(ROOT, cfg.dataFile));
 const storage = createStorage({ ...cfg, localPath: path.resolve(ROOT, cfg.localPath) });
 const D = db.data;
+if (D.settings.requireApproval !== true) for (const u of D.users || []) if (u.approved === false) u.approved = true;
 // Administrador fijo: si ADMIN_USER está definido, solo ese usuario es administrador
 const ADMIN_USER = String(process.env.ADMIN_USER || cfg.adminUser || '').trim().toLowerCase();
 if (ADMIN_USER) { for (const u of D.users) u.admin = u.username.toLowerCase() === ADMIN_USER; db.save(); }
@@ -392,7 +393,7 @@ route('POST', '/api/register', async (req, res) => {
   const salt = crypto.randomBytes(16).toString('hex');
   const admin = ADMIN_USER ? name.toLowerCase() === ADMIN_USER : D.users.length === 0;
   // Cuentas nuevas pendientes de aprobación del administrador (si está activado)
-  const approved = admin || D.settings.requireApproval === false;
+  const approved = admin || D.settings.requireApproval !== true; // desactivado salvo que se active en Ajustes
   const user = { id: crypto.randomUUID(), username: name, salt, passHash: hashPass(password, salt), admin, approved, createdAt: new Date().toISOString() };
   D.users.push(user); db.save();
   logAccess(req, name, approved ? 'registro' : 'registro (pendiente)');
@@ -808,7 +809,7 @@ route('DELETE', '/api/admin/users/:id', { admin: true }, (req, res, p, me) => {
 route('GET', '/api/admin/settings', { admin: true }, (req, res) => {
   const myIp = clientIp(req);
   const myIpStatus = isPrivate(myIp) ? 'red local' : !geo.info.loaded ? 'sin comprobar' : geo.allowed(myIp) ? 'España' : 'fuera de España';
-  send(res, 200, { security: { countries: GEO_COUNTRIES, geo: geo.info, ...guard.stats, bannedNow: guard.bans.size, myIp, myIpStatus }, adminFixed: !!ADMIN_USER, inviteCode: D.settings.inviteCode, requireInvite: !!D.settings.requireInvite, requireApproval: D.settings.requireApproval !== false, pending: D.users.filter((u) => u.approved === false).length, siteName: D.settings.siteName || cfg.siteName, storage: cfg.storage, remote: cfg.remote, libraryPath: cfg.libraryPath, sections: D.sections || [], moviesPath: cfg.moviesPath, seriesPath: cfg.seriesPath, tmdb: !!cfg.tmdbApiKey, lastScan: D.lastScan });
+  send(res, 200, { security: { countries: GEO_COUNTRIES, geo: geo.info, ...guard.stats, bannedNow: guard.bans.size, myIp, myIpStatus }, adminFixed: !!ADMIN_USER, inviteCode: D.settings.inviteCode, requireInvite: !!D.settings.requireInvite, requireApproval: D.settings.requireApproval === true, pending: D.users.filter((u) => u.approved === false).length, siteName: D.settings.siteName || cfg.siteName, storage: cfg.storage, remote: cfg.remote, libraryPath: cfg.libraryPath, sections: D.sections || [], moviesPath: cfg.moviesPath, seriesPath: cfg.seriesPath, tmdb: !!cfg.tmdbApiKey, lastScan: D.lastScan });
 });
 route('PUT', '/api/admin/settings', { admin: true }, async (req, res) => {
   const { inviteCode, siteName, requireInvite, requireApproval } = await readBody(req);

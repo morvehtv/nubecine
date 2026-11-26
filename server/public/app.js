@@ -1116,7 +1116,7 @@ async function renderAdmin(tabArg) {
     const s = await api('/api/admin/settings');
     body.innerHTML = `<form class="panel" id="sf" style="max-width:560px"><h3>General</h3><p>&nbsp;</p>
         <div class="field"><label>Nombre de la web</label><input class="input focusable" name="siteName" value="${esc(s.siteName)}"></div>
-        <label style="display:flex;gap:8px;align-items:center;margin:4px 0 8px"><input type="checkbox" class="focusable" name="requireApproval" ${s.requireApproval ? 'checked' : ''}> Aprobar a mano las cuentas nuevas (recomendado)</label>
+        <label style="display:flex;gap:8px;align-items:center;margin:4px 0 8px"><input type="checkbox" class="focusable" name="requireApproval" ${s.requireApproval ? 'checked' : ''}> Aprobar a mano las cuentas nuevas</label>
         <label style="display:flex;gap:8px;align-items:center;margin:4px 0 12px"><input type="checkbox" class="focusable" name="requireInvite" ${s.requireInvite ? 'checked' : ''}> Pedir código de invitación para registrarse</label>
         <div class="field"><label>Código de invitación</label><input class="input focusable" name="inviteCode" value="${esc(s.inviteCode)}"></div>
         <button class="btn primary focusable">Guardar</button></form>
