@@ -12,7 +12,7 @@ if [ "${STORAGE:-rclone}" != "local" ]; then
   else
     # Solo escucha en local: nadie de fuera puede hablar con rclone directamente
     rclone rcd --rc-serve --rc-no-auth --rc-addr 127.0.0.1:5572 \
-      --buffer-size 32M --contimeout 30s --timeout 5m --low-level-retries 5 &
+      --buffer-size 96M --contimeout 30s --timeout 10m --low-level-retries 10 --retries 5 &
     sleep 2
   fi
 fi

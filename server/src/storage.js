@@ -83,7 +83,12 @@ class RcloneStorage {
       if (this.auth) h.Authorization = this.auth;
       const req = this.lib.request({
         hostname: this.rc.hostname, port: this.rc.port, method, path: pathname, headers: h,
-      }, resolve);
+      }, (res) => {
+        // Ya está llegando el archivo: sin límite de tiempo (si se pausa el vídeo, la conexión
+        // queda quieta y no debe cortarse, o al continuar habría un parón)
+        req.setTimeout(0);
+        resolve(res);
+      });
       req.on('error', reject);
       req.setTimeout(120000, () => req.destroy(new Error('Tiempo de espera agotado con rclone')));
       if (body) req.write(body);

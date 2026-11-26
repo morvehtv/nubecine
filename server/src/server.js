@@ -644,8 +644,9 @@ function execFileProbe(args, cb) {
 // Vídeo: se copia tal cual (sin coste) o se convierte a H.264 8 bits (lo reproduce cualquier aparato).
 function videoArgs(vmode, m) {
   if (vmode === 'h264') {
-    return ['-c:v', 'libx264', '-preset', process.env.TRANSCODE_PRESET || 'veryfast', '-crf', '21',
-      '-maxrate', '10M', '-bufsize', '20M', '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-level', '4.1',
+    // Calidad alta (CRF 19, casi igual al original) sin pasar de 14 Mb/s para que no haya parones
+    return ['-c:v', 'libx264', '-preset', process.env.TRANSCODE_PRESET || 'veryfast', '-crf', process.env.TRANSCODE_CRF || '19', '-tune', 'film',
+      '-maxrate', '14M', '-bufsize', '28M', '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-level', '4.2',
       '-vf', "scale='min(1920,iw)':-2", '-g', '48', '-sc_threshold', '0'];
   }
   const hevc = m && m.video && m.video.codec === 'hevc';
@@ -653,6 +654,9 @@ function videoArgs(vmode, m) {
 }
 // Audio: siempre AAC estéreo (compatible con todo)
 const audioArgs = ['-c:a', 'aac', '-b:a', '192k', '-ac', '2'];
+// ¿Esta versión de ffmpeg sabe leer los primeros segundos de golpe? (arranque más rápido y colchón sin parones)
+let FF_BURST = false;
+try { FF_BURST = /readrate_initial_burst/.test(require('child_process').execFileSync('ffmpeg', ['-hide_banner', '-h', 'full'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })); } catch {}
 let transcodes = 0; // conversiones de imagen en marcha (usan CPU)
 const MAX_TRANSCODES = parseInt(process.env.MAX_TRANSCODES || '2', 10);
 
@@ -744,7 +748,7 @@ route('GET', '/hls/:fileId/index.m3u8', async (req, res, p) => {
     const dir = path.join(HLS_DIR, sid);
     fs.mkdirSync(dir, { recursive: true });
     const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-rw_timeout', '30000000',
-      ...(start > 0 ? ['-ss', String(start)] : []), ...(vmode === 'copy' ? ['-readrate', '4'] : []),
+      ...(start > 0 ? ['-ss', String(start)] : []), ...(vmode === 'copy' ? ['-readrate', '8', ...(FF_BURST ? ['-readrate_initial_burst', '30'] : [])] : []),
       '-i', storage.probeUrl(f.root, f.path),
       '-map', '0:v:0', '-map', `0:a:${n}?`, '-sn', '-dn', ...videoArgs(vmode, m), ...audioArgs,
       '-f', 'hls', '-hls_time', '6', '-hls_list_size', '0', '-hls_playlist_type', 'event',
