@@ -126,7 +126,7 @@ function newSession(res, req, user) {
   D.sessions[tokenKey(token)] = { userId: user.id, expires: now + 1000 * 60 * 60 * 24 * 60, created: now, last: now, ip: clientIp(req), device: deviceName(req.headers['user-agent']) };
   user.lastLogin = { at: new Date().toISOString(), ip: clientIp(req) };
   db.save();
-  res.setHeader('Set-Cookie', `sid=${token}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 60}; SameSite=Strict${isHttps(req) ? '; Secure' : ''}`);
+  res.setHeader('Set-Cookie', `sid=${token}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 60}; SameSite=Lax${isHttps(req) ? '; Secure' : ''}`);
 }
 function sessionOf(req) {
   const token = cookies(req).sid || (req.headers.authorization || '').replace(/^Bearer /, '');
@@ -461,7 +461,12 @@ route('GET', '/api/events', { auth: true }, (req, res) => {
   req.on('close', () => { clearInterval(ping); liveClients.delete(res); });
 });
 
-route('GET', '/api/me', { auth: true }, (req, res, p, user) => send(res, 200, publicUser(user)));
+route('GET', '/api/me', { auth: true }, (req, res, p, user) => {
+  // Renueva la cookie con SameSite=Lax (una versión anterior usaba Strict, que en iPhone deja de enviarse)
+  const token = cookies(req).sid; const ses = sessionOf(req);
+  if (token && ses) res.setHeader('Set-Cookie', `sid=${token}; HttpOnly; Path=/; Max-Age=${Math.max(60, Math.floor((ses.s.expires - Date.now()) / 1000))}; SameSite=Lax${isHttps(req) ? '; Secure' : ''}`);
+  send(res, 200, publicUser(user));
+});
 
 route('POST', '/api/password', { auth: true }, async (req, res, p, user) => {
   const { current, next } = await readBody(req);

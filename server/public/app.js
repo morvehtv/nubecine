@@ -1,6 +1,8 @@
 /* NubeCine — aplicación web (sin dependencias). Funciona con ratón, táctil, teclado y mando de TV. */
 (() => {
 'use strict';
+// Si algo falla en el navegador, se muestra en pantalla (ayuda a encontrar problemas en móviles)
+window.addEventListener('error', (e) => { try { if (e.message) toast('Error: ' + e.message); } catch {} });
 
 // ---------------- Utilidades ----------------
 const $ = (s, el = document) => el.querySelector(s);
