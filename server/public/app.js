@@ -682,7 +682,7 @@ async function renderPlayer(fileId) {
   // Chrome/Firefox reproducen siempre la PRIMERA pista del archivo (aunque otra esté marcada como principal)
   const browserDefault = 0;
   const canNativeSwitch = () => !!(v.audioTracks && v.audioTracks.length > 1);
-  const canRemux = () => info.duration > 0;
+  const canRemux = () => true; // el servidor siempre puede adaptarlo (aunque no sepa la duración)
   // Modo adaptado: el servidor reempaqueta (y si hace falta convierte la imagen a H.264)
   const media = info.media || {};
   let vmode = videoCodecOk(media.video) ? 'copy' : 'h264';

@@ -170,6 +170,18 @@ function continueWatching(userId) {
 
 // ---------- Análisis de pistas de audio (castellano por defecto) ----------
 // D.media[fileId] = { key, audio: [{lang,title,codec,channels,default}], pref: ordinal|null, error? }
+async function probeOne(id) {
+  const f = D.files[id];
+  if (!f || f.kind !== 'video') return;
+  const key = `${f.path}|${f.size}`;
+  try {
+    const { audio, video, duration, container } = await ffprobe(storage.probeUrl(f.root, f.path));
+    D.media[id] = { key, audio, video, duration, container, pref: pickCastellano(audio) };
+  } catch (e) {
+    D.media[id] = { key, audio: [], pref: null, error: String(e.message || e).slice(0, 200) };
+  }
+}
+const needsProbe = (id) => { const f = D.files[id], m = (D.media || {})[id]; return !m || m.key !== `${f.path}|${f.size}` || m.video === undefined; };
 let probing = false;
 async function probeAll() {
   if (probing || !(await ffprobeAvailable())) return;
@@ -181,14 +193,9 @@ async function probeAll() {
     let n = 0;
     const worker = async () => {
       while (todo.length) {
-        const [id, f] = todo.shift();
-        const key = `${f.path}|${f.size}`;
-        try {
-          const { audio, video, duration, container } = await ffprobe(storage.probeUrl(f.root, f.path));
-          D.media[id] = { key, audio, video, duration, container, pref: pickCastellano(audio) };
-        } catch (e) {
-          D.media[id] = { key, audio: [], pref: null, error: String(e.message || e).slice(0, 200) };
-        }
+        const [id] = todo.shift();
+        if (!needsProbe(id)) continue; // ya lo analizó la reproducción
+        await probeOne(id);
         if (++n % 5 === 0) db.save();
       }
     };
@@ -370,9 +377,14 @@ route('GET', '/api/title/:id', { auth: true }, (req, res, p, user) => {
   send(res, 200, out);
 });
 
-route('GET', '/api/play/:fileId', { auth: true }, (req, res, p, user) => {
+route('GET', '/api/play/:fileId', { auth: true }, async (req, res, p, user) => {
   const own = findFileOwner(p.fileId);
   if (!own) return fail(res, 404, 'No encontrado');
+  if (needsProbe(p.fileId) && (await ffprobeAvailable())) {
+    D.media = D.media || {};
+    await Promise.race([probeOne(p.fileId), new Promise((r) => setTimeout(r, 25000))]);
+    db.save();
+  }
   const { title: t, episode: e } = own;
   let next = null;
   if (e) {
