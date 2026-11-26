@@ -44,7 +44,7 @@ async function api(path, opts = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && !opts.allow401) { state.me = null; go('/login'); throw new Error('auth'); }
-  if (!res.ok) throw new Error(data.error || 'Error ' + res.status);
+  if (!res.ok) { const err = new Error(data.error || 'Error ' + res.status); err.data = data; err.status = res.status; throw err; }
   return data;
 }
 
@@ -309,10 +309,15 @@ function renderAuth(mode) {
   const reg = mode === 'registro';
   app.innerHTML = `<div class="auth-wrap"><form class="auth-card" autocomplete="on">
     <div class="brand"><span class="brand-mark"></span>${esc(state.siteName)}</div>
-    <p class="sub">${reg ? (state.requireInvite ? 'Crea tu cuenta con el código de invitación.' : 'Crea tu cuenta para empezar a ver.') : 'Inicia sesión para ver tus películas y series.'}</p>
+    <p class="sub" id="sub">${reg ? (state.requireInvite ? 'Crea tu cuenta con el código de invitación.' : 'Crea tu cuenta para empezar a ver.') : 'Inicia sesión para ver tus películas y series.'}</p>
+    <div id="fields">
     <div class="field"><label for="u">Usuario</label><input class="input focusable" id="u" name="username" autocomplete="username" required></div>
-    <div class="field"><label for="p">Contraseña</label><input class="input focusable" id="p" name="password" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" required></div>
+    <div class="field"><label for="p">Contraseña</label><input class="input focusable" id="p" name="password" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" ${reg ? 'minlength="8"' : ''} required>
+      ${reg ? '<div class="hint">Mínimo 8 caracteres. Evita contraseñas típicas.</div>' : ''}</div>
     ${reg && state.requireInvite ? '<div class="field"><label for="c">Código de invitación</label><input class="input focusable" id="c" name="inviteCode" required></div>' : ''}
+    </div>
+    <div class="field" id="code-field" hidden><label for="code">Código de verificación (6 cifras)</label>
+      <input class="input focusable" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9 ]*"></div>
     <div class="error" id="err"></div>
     <button class="btn primary focusable" type="submit">${reg ? 'Crear cuenta' : 'Entrar'}</button>
     <div class="switch">${reg ? '¿Ya tienes cuenta? <a class="focusable" href="#/login">Inicia sesión</a>' : '¿No tienes cuenta? <a class="focusable" href="#/registro">Regístrate</a>'}</div>
@@ -321,11 +326,26 @@ function renderAuth(mode) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = Object.fromEntries(new FormData(form));
-    const btn = $('button', form); btn.disabled = true;
+    if (!body.code) delete body.code;
+    const btn = $('button[type=submit]', form); btn.disabled = true;
     try {
-      state.me = await api(reg ? '/api/register' : '/api/login', { method: 'POST', body, allow401: true });
-      go('/');
-    } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
+      const r = await api(reg ? '/api/register' : '/api/login', { method: 'POST', body, allow401: true });
+      if (r.pending) {
+        form.innerHTML = `<div class="brand"><span class="brand-mark"></span>${esc(state.siteName)}</div>
+          <h3 style="margin:18px 0 8px">Cuenta creada</h3><p class="sub">Tu cuenta está <b>pendiente de aprobación</b>. Podrás entrar cuando el administrador la acepte.</p>
+          <a class="btn primary focusable" href="#/login" style="width:100%">Volver al inicio</a>`;
+        return;
+      }
+      state.me = r; go('/');
+    } catch (err) {
+      // Verificación en dos pasos: se pide el código
+      if (err.data && err.data.need2fa) {
+        $('#fields').hidden = true; $('#code-field').hidden = false;
+        $('#sub').textContent = 'Abre tu app de autenticación y escribe el código.';
+        $('#code').required = true; $('#code').focus();
+      }
+      $('#err').textContent = err.message; btn.disabled = false;
+    }
   });
   autofocus('#u');
 }
@@ -919,22 +939,67 @@ async function renderPlayer(fileId) {
 }
 
 // ---------------- Cuenta ----------------
-function renderAccount() {
-  app.innerHTML = `<div class="page" style="max-width:520px"><h1>Mi cuenta</h1>
+async function renderAccount() {
+  app.innerHTML = `<div class="page" style="max-width:620px"><h1>Mi cuenta</h1>
     <div class="panel"><h3>${esc(state.me.username)}</h3><p>${state.me.admin ? 'Administrador' : 'Usuario'}</p>
       <div class="actions"><button class="btn focusable" id="logout">Cerrar sesión</button>
       ${window.NubeTV ? '<button class="btn ghost focusable" id="server">Cambiar servidor</button>' : ''}</div></div>
+    <div class="panel"><h3>Dispositivos conectados</h3><p>Si ves alguno que no reconoces, cierra sesión en todos y cambia la contraseña.</p>
+      <div id="devices" class="small-list">Cargando…</div>
+      <button class="btn small focusable" id="logout-others" style="margin-top:12px">Cerrar sesión en los demás</button></div>
+    <div class="panel" id="tfa"><h3>Verificación en dos pasos</h3><div id="tfa-body"></div></div>
     <form class="panel" id="pw"><h3>Cambiar contraseña</h3>
       <div class="field"><label>Contraseña actual</label><input class="input focusable" type="password" name="current" autocomplete="current-password" required></div>
-      <div class="field"><label>Nueva contraseña</label><input class="input focusable" type="password" name="next" autocomplete="new-password" minlength="6" required></div>
+      <div class="field"><label>Nueva contraseña</label><input class="input focusable" type="password" name="next" autocomplete="new-password" minlength="8" required><div class="hint">Mínimo 8 caracteres. Se cerrará la sesión en tus otros dispositivos.</div></div>
       <div class="error" id="err"></div><button class="btn primary focusable">Guardar</button></form></div>`;
   $('#logout').onclick = async () => { await api('/api/logout', { method: 'POST' }); state.me = null; state.sections = null; stopLive(); go('/login'); };
   if ($('#server')) $('#server').onclick = () => window.NubeTV.changeServer();
   $('#pw').onsubmit = async (e) => {
     e.preventDefault();
-    try { await api('/api/password', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); e.target.reset(); $('#err').textContent = ''; toast('Contraseña cambiada'); }
+    try { await api('/api/password', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); e.target.reset(); $('#err').textContent = ''; toast('Contraseña cambiada'); loadDevices(); }
     catch (err) { $('#err').textContent = err.message; }
   };
+  const loadDevices = async () => {
+    const list = await api('/api/sessions');
+    $('#devices').innerHTML = list.map((d) => `<div class="row-item"><b>${esc(d.device)}</b>${d.current ? ' <span class="tag">este</span>' : ''}
+      <span class="muted"> · ${esc(d.ip)} · ${d.last ? new Date(d.last).toLocaleString('es-ES') : ''}</span></div>`).join('');
+  };
+  $('#logout-others').onclick = async () => { const r = await api('/api/sessions/logout-others', { method: 'POST' }); toast(`Sesión cerrada en ${r.closed} dispositivo(s)`); loadDevices(); };
+  loadDevices();
+  // 2FA
+  const drawTfa = () => {
+    const b = $('#tfa-body');
+    if (state.me.twoFactor) {
+      b.innerHTML = `<p>✅ <b>Activada.</b> Al entrar te pediremos un código de tu app de autenticación.</p>
+        <form id="tfa-off"><div class="two"><div class="field"><label>Contraseña</label><input class="input focusable" type="password" name="password" required></div>
+        <div class="field"><label>Código actual</label><input class="input focusable" name="code" inputmode="numeric" maxlength="6" required></div></div>
+        <div class="error" id="tfa-err"></div><button class="btn small danger focusable">Desactivar</button></form>`;
+      $('#tfa-off').onsubmit = async (e) => {
+        e.preventDefault();
+        try { await api('/api/2fa/disable', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); state.me.twoFactor = false; toast('Verificación en dos pasos desactivada'); drawTfa(); }
+        catch (err) { $('#tfa-err').textContent = err.message; }
+      };
+    } else {
+      b.innerHTML = `<p>Protege tu cuenta: además de la contraseña, al entrar se pedirá un código que cambia cada 30 segundos en tu móvil
+        (Google Authenticator, Microsoft Authenticator, Authy…).${state.me.admin ? ' <b>Muy recomendable para la cuenta de administrador.</b>' : ''}</p>
+        <button class="btn primary small focusable" id="tfa-start">Activar</button>`;
+      $('#tfa-start').onclick = async () => {
+        const r = await api('/api/2fa/setup', { method: 'POST' });
+        b.innerHTML = `<p><b>1.</b> En tu móvil, abre tu app de autenticación y añade una cuenta con esta clave
+          (o <a href="${esc(r.url)}" style="color:var(--accent)">toca aquí</a> si estás en el móvil):</p>
+          <p class="code" style="font-size:17px;letter-spacing:.08em;word-break:break-all;display:inline-block;padding:8px 12px">${esc(r.secret.replace(/(.{4})/g, '$1 ').trim())}</p>
+          <form id="tfa-on"><p><b>2.</b> Escribe el código de 6 cifras que aparece en la app:</p>
+          <div class="field" style="max-width:200px"><input class="input focusable" name="code" inputmode="numeric" maxlength="6" required></div>
+          <div class="error" id="tfa-err"></div><button class="btn primary small focusable">Confirmar y activar</button></form>`;
+        $('#tfa-on').onsubmit = async (e) => {
+          e.preventDefault();
+          try { await api('/api/2fa/enable', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); state.me.twoFactor = true; toast('Verificación en dos pasos activada'); drawTfa(); }
+          catch (err) { $('#tfa-err').textContent = err.message; }
+        };
+      };
+    }
+  };
+  drawTfa();
   autofocus('#logout');
 }
 
@@ -1011,22 +1076,35 @@ async function renderAdmin(tabArg) {
   }
 
   if (tab === 'usuarios') {
-    const [users, settings] = await Promise.all([api('/api/admin/users'), api('/api/admin/settings')]);
-    body.innerHTML = `<div class="panel"><h3>Invitar a alguien</h3><p>${settings.requireInvite ? `Comparte el enlace de la web y este código para que se registren: <span class="code">${esc(settings.inviteCode)}</span> (puedes cambiarlo en Ajustes).` : 'El registro está abierto: cualquiera con el enlace de la web puede crear una cuenta. Puedes exigir un código en Ajustes.'}</p></div>
-      <div class="panel"><h3>Usuarios (${users.length})</h3><div style="overflow-x:auto"><table class="table"><thead><tr><th>Usuario</th><th>Rol</th><th>Alta</th><th></th></tr></thead><tbody>
-      ${users.map((u) => `<tr><td><b>${esc(u.username)}</b>${u.id === state.me.id ? ' (tú)' : ''}</td><td>${u.admin ? 'Admin' : 'Usuario'}</td>
-        <td>${new Date(u.createdAt).toLocaleDateString('es-ES')}</td>
+    const [users, settings, accesses] = await Promise.all([api('/api/admin/users'), api('/api/admin/settings'), api('/api/admin/access-log')]);
+    const pending = users.filter((u) => !u.approved);
+    body.innerHTML = `${pending.length ? `<div class="panel" style="border-color:var(--accent)"><h3>Pendientes de aprobación (${pending.length})</h3><p>Estas personas se han registrado y no pueden ver nada hasta que las aceptes.</p>
+      ${pending.map((u) => `<div class="row-item"><b>${esc(u.username)}</b> <span class="muted">· ${new Date(u.createdAt).toLocaleString('es-ES')}</span>
+        <span style="float:right"><button class="btn small primary focusable" data-approve="${u.id}">Aprobar</button>
+        <button class="btn small danger focusable" data-del="${u.id}" data-name="${esc(u.username)}">Rechazar</button></span></div>`).join('')}</div>` : ''}
+      <div class="panel"><h3>Invitar a alguien</h3><p>${settings.requireInvite ? `Comparte el enlace de la web y este código para que se registren: <span class="code">${esc(settings.inviteCode)}</span> (puedes cambiarlo en Ajustes).` : 'El registro está abierto: cualquiera con el enlace de la web puede crear una cuenta. Puedes exigir un código en Ajustes.'}</p></div>
+      <div class="panel"><h3>Usuarios (${users.length - pending.length})</h3><div style="overflow-x:auto"><table class="table"><thead><tr><th>Usuario</th><th>Rol</th><th>Último acceso</th><th>Disp.</th><th></th></tr></thead><tbody>
+      ${users.filter((u) => u.approved).map((u) => `<tr><td><b>${esc(u.username)}</b>${u.id === state.me.id ? ' (tú)' : ''}${u.twoFactor ? ' 🔒' : ''}</td><td>${u.admin ? 'Admin' : 'Usuario'}</td>
+        <td>${u.lastLogin ? new Date(u.lastLogin.at).toLocaleString('es-ES') + `<br><span class="muted">${esc(u.lastLogin.ip)}</span>` : '—'}</td><td>${u.devices}</td>
         <td style="white-space:nowrap">${u.id === state.me.id ? '' : `${settings.adminFixed ? '' : `<button class="btn small focusable" data-role="${u.id}" data-admin="${u.admin ? 0 : 1}">${u.admin ? 'Quitar admin' : 'Hacer admin'}</button>`}
         <button class="btn small focusable" data-pass="${u.id}">Nueva contraseña</button>
+        <button class="btn small focusable" data-kick="${u.id}">Cerrar sesiones</button>
         <button class="btn small danger focusable" data-del="${u.id}" data-name="${esc(u.username)}">Borrar</button>`}</td></tr>`).join('')}
+      </tbody></table></div></div>
+      <div class="panel"><h3>Accesos recientes</h3><p>Inicios de sesión, intentos fallidos y registros. 🌍 = desde fuera de España (normalmente bloqueado).</p>
+      <div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table class="table"><thead><tr><th>Fecha</th><th>Usuario</th><th>Resultado</th><th>IP</th><th>Dispositivo</th></tr></thead><tbody>
+      ${accesses.map((a) => `<tr${a.result === 'correcto' || a.result.startsWith('registro') ? '' : ' style="color:var(--danger)"'}><td style="white-space:nowrap">${new Date(a.at).toLocaleString('es-ES')}</td>
+        <td>${esc(a.user)}</td><td>${esc(a.result)}</td><td>${esc(a.ip)}${a.place === 'fuera de España' ? ' 🌍' : ''}</td><td>${esc(a.device || '')}</td></tr>`).join('') || '<tr><td colspan="5">Sin registros todavía.</td></tr>'}
       </tbody></table></div></div>`;
     body.addEventListener('click', async (e) => {
       const b = e.target.closest('button'); if (!b) return;
       try {
+        if (b.dataset.approve) { await api('/api/admin/users/' + b.dataset.approve, { method: 'POST', body: { approved: true } }); toast('Cuenta aprobada'); renderAdmin('usuarios'); }
+        if (b.dataset.kick) { await api('/api/admin/users/' + b.dataset.kick, { method: 'POST', body: { logout: true } }); toast('Sesiones cerradas'); renderAdmin('usuarios'); }
         if (b.dataset.role) { await api('/api/admin/users/' + b.dataset.role, { method: 'POST', body: { admin: b.dataset.admin === '1' } }); renderAdmin('usuarios'); }
         if (b.dataset.del && await confirmDialog(`¿Borrar la cuenta de ${b.dataset.name}?`, 'Borrar')) { await api('/api/admin/users/' + b.dataset.del, { method: 'DELETE' }); toast('Usuario borrado'); renderAdmin('usuarios'); }
         if (b.dataset.pass) {
-          const d = dialog(`<h3>Nueva contraseña</h3><form><div class="field"><input class="input focusable" name="password" type="text" minlength="6" required></div>
+          const d = dialog(`<h3>Nueva contraseña</h3><form><div class="field"><input class="input focusable" name="password" type="text" minlength="8" required></div>
             <div class="actions"><button class="btn primary focusable">Guardar</button></div></form>`);
           d.querySelector('form').onsubmit = async (ev) => { ev.preventDefault(); await api('/api/admin/users/' + b.dataset.pass, { method: 'POST', body: { password: ev.target.password.value } }); d.remove(); toast('Contraseña cambiada'); };
         }
@@ -1038,6 +1116,7 @@ async function renderAdmin(tabArg) {
     const s = await api('/api/admin/settings');
     body.innerHTML = `<form class="panel" id="sf" style="max-width:560px"><h3>General</h3><p>&nbsp;</p>
         <div class="field"><label>Nombre de la web</label><input class="input focusable" name="siteName" value="${esc(s.siteName)}"></div>
+        <label style="display:flex;gap:8px;align-items:center;margin:4px 0 8px"><input type="checkbox" class="focusable" name="requireApproval" ${s.requireApproval ? 'checked' : ''}> Aprobar a mano las cuentas nuevas (recomendado)</label>
         <label style="display:flex;gap:8px;align-items:center;margin:4px 0 12px"><input type="checkbox" class="focusable" name="requireInvite" ${s.requireInvite ? 'checked' : ''}> Pedir código de invitación para registrarse</label>
         <div class="field"><label>Código de invitación</label><input class="input focusable" name="inviteCode" value="${esc(s.inviteCode)}"></div>
         <button class="btn primary focusable">Guardar</button></form>
@@ -1052,7 +1131,7 @@ async function renderAdmin(tabArg) {
         Carátulas automáticas (TMDB): ${s.tmdb ? 'activadas' : 'desactivadas'}<br><br>Estos valores se cambian en <span class="code">config.json</span> del servidor.</p></div>`;
     $('#sf').onsubmit = async (e) => {
       e.preventDefault();
-      const body = Object.fromEntries(new FormData(e.target)); body.requireInvite = !!body.requireInvite;
+      const body = Object.fromEntries(new FormData(e.target)); body.requireInvite = !!body.requireInvite; body.requireApproval = !!body.requireApproval;
       try { await api('/api/admin/settings', { method: 'PUT', body }); toast('Ajustes guardados'); loadConfig(); }
       catch (err) { toast(err.message); }
     };

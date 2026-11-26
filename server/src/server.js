@@ -100,29 +100,93 @@ function clientIp(req) {
 
 // ---------- Usuarios y sesiones ----------
 const hashPass = (pw, salt) => crypto.scryptSync(pw, salt, 64).toString('hex');
+const passOk = (u, pw) => crypto.timingSafeEqual(Buffer.from(hashPass(String(pw || ''), u.salt), 'hex'), Buffer.from(u.passHash, 'hex'));
+// Las sesiones se guardan cifradas (hash del token): si alguien leyera la base de datos no podría usarlas
+const tokenKey = (t) => 'h:' + crypto.createHash('sha256').update(String(t)).digest('hex');
+function deviceName(ua = '') {
+  const os = /Android TV|AFT|GoogleTV|BRAVIA|SmartTV/i.test(ua) ? 'Tele' : /iPhone/i.test(ua) ? 'iPhone' : /iPad/i.test(ua) ? 'iPad' : /Android/i.test(ua) ? 'Android' : /Windows/i.test(ua) ? 'Windows' : /Mac OS/i.test(ua) ? 'Mac' : /Linux/i.test(ua) ? 'Linux' : 'Dispositivo';
+  const app = /NubeCineApp/i.test(ua) ? 'app' : /Edg\//.test(ua) ? 'Edge' : /Firefox/i.test(ua) ? 'Firefox' : /CriOS|Chrome/i.test(ua) ? 'Chrome' : /Safari/i.test(ua) ? 'Safari' : 'navegador';
+  return `${os} · ${app}`;
+}
 function newSession(res, req, user) {
   const token = crypto.randomBytes(32).toString('hex');
-  D.sessions[token] = { userId: user.id, expires: Date.now() + 1000 * 60 * 60 * 24 * 60 };
+  const now = Date.now();
+  D.sessions[tokenKey(token)] = { userId: user.id, expires: now + 1000 * 60 * 60 * 24 * 60, created: now, last: now, ip: clientIp(req), device: deviceName(req.headers['user-agent']) };
+  user.lastLogin = { at: new Date().toISOString(), ip: clientIp(req) };
   db.save();
   res.setHeader('Set-Cookie', `sid=${token}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 60}; SameSite=Lax${isHttps(req) ? '; Secure' : ''}`);
 }
-function currentUser(req) {
+function sessionOf(req) {
   const token = cookies(req).sid || (req.headers.authorization || '').replace(/^Bearer /, '');
-  const s = token && D.sessions[token];
+  if (!token) return null;
+  let key = tokenKey(token);
+  if (!D.sessions[key] && D.sessions[token]) { D.sessions[key] = D.sessions[token]; delete D.sessions[token]; db.save(); } // sesiones antiguas
+  const s = D.sessions[key];
   if (!s) return null;
-  if (s.expires < Date.now()) { delete D.sessions[token]; db.save(); return null; }
-  return D.users.find((u) => u.id === s.userId) || null;
+  if (s.expires < Date.now()) { delete D.sessions[key]; db.save(); return null; }
+  if (Date.now() - (s.last || 0) > 10 * 60 * 1000) { s.last = Date.now(); s.ip = clientIp(req); db.save(); }
+  return { key, s };
 }
-const publicUser = (u) => ({ id: u.id, username: u.username, admin: !!u.admin });
+function currentUser(req) {
+  const ses = sessionOf(req);
+  if (!ses) return null;
+  const u = D.users.find((x) => x.id === ses.s.userId) || null;
+  return u && u.approved === false ? null : u;
+}
+const publicUser = (u) => ({ id: u.id, username: u.username, admin: !!u.admin, twoFactor: !!(u.totp && u.totp.enabled) });
+
+// Contraseñas: mínimo 8 caracteres y que no sea de las típicas
+const COMMON_PW = new Set(['12345678', '123456789', '1234567890', 'password', 'password1', 'contraseña', 'qwertyui', 'qwerty123', '11111111', '00000000', '12341234', 'abcd1234', 'iloveyou', 'aaaaaaaa', 'abc12345', 'admin123', 'administrador', 'teamo123', 'barcelona', 'realmadrid', 'netflix1', 'pelicula', 'peliculas', '87654321', 'zxcvbnm1', 'asdfghjk', '1q2w3e4r', 'passw0rd']);
+function passwordProblem(pw, username) {
+  pw = String(pw || '');
+  if (pw.length < 8) return 'La contraseña debe tener al menos 8 caracteres.';
+  if (COMMON_PW.has(pw.toLowerCase()) || /^(.)\1+$/.test(pw)) return 'Esa contraseña es demasiado fácil de adivinar.';
+  if (username && pw.toLowerCase().includes(String(username).toLowerCase())) return 'La contraseña no puede contener tu nombre de usuario.';
+  return null;
+}
+
+// Verificación en dos pasos (TOTP, compatible con Google Authenticator, Authy, Microsoft Authenticator…)
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function b32enc(buf) { let bits = ''; for (const b of buf) bits += b.toString(2).padStart(8, '0'); let o = ''; for (let i = 0; i + 5 <= bits.length; i += 5) o += B32[parseInt(bits.slice(i, i + 5), 2)]; return o; }
+function b32dec(str) { let bits = ''; for (const c of String(str).replace(/[=\s]/g, '').toUpperCase()) { const v = B32.indexOf(c); if (v >= 0) bits += v.toString(2).padStart(5, '0'); } const o = []; for (let i = 0; i + 8 <= bits.length; i += 8) o.push(parseInt(bits.slice(i, i + 8), 2)); return Buffer.from(o); }
+function totpCode(secret, step) {
+  const msg = Buffer.alloc(8); msg.writeBigUInt64BE(BigInt(step));
+  const h = crypto.createHmac('sha1', b32dec(secret)).update(msg).digest();
+  const o = h[h.length - 1] & 15;
+  return String((h.readUInt32BE(o) & 0x7fffffff) % 1000000).padStart(6, '0');
+}
+function totpOk(user, code) {
+  code = String(code || '').replace(/\s/g, '');
+  if (!/^\d{6}$/.test(code) || !user.totp) return false;
+  const step = Math.floor(Date.now() / 30000);
+  for (const d of [-1, 0, 1]) {
+    const st = step + d;
+    if (st > (user.totp.lastStep || 0) && crypto.timingSafeEqual(Buffer.from(totpCode(user.totp.secret, st)), Buffer.from(code))) {
+      user.totp.lastStep = st; // un código no se puede reutilizar
+      return true;
+    }
+  }
+  return false;
+}
+
+// Registro de accesos (últimos 300)
+function logAccess(req, username, result) {
+  const ip = clientIp(req);
+  D.accessLog = D.accessLog || [];
+  D.accessLog.unshift({ at: new Date().toISOString(), user: String(username || '').slice(0, 40), ip, result, device: deviceName(req.headers['user-agent']) });
+  D.accessLog.length = Math.min(D.accessLog.length, 300);
+  db.save();
+}
+const userFails = new Map(); // usuario -> {n, until}: 10 fallos = cuenta bloqueada 15 min
 
 const attempts = new Map(); // ip -> {n, until}
-function tooMany(req) {
+// Freno por IP: 15 intentos FALLIDOS (contraseña o código incorrecto) = 10 minutos bloqueada
+function tooMany(req) { const a = attempts.get(clientIp(req)); return !!(a && a.until > Date.now()); }
+function ipFail(req) {
   const ip = clientIp(req);
   const a = attempts.get(ip) || { n: 0, until: 0 };
-  if (a.until > Date.now()) return true;
-  a.n++; if (a.n >= 8) { a.until = Date.now() + 10 * 60 * 1000; a.n = 0; }
+  if (++a.n >= 15) { a.until = Date.now() + 10 * 60 * 1000; a.n = 0; }
   attempts.set(ip, a);
-  return false;
 }
 
 // ---------- Catálogo ----------
@@ -320,30 +384,50 @@ route('POST', '/api/register', async (req, res) => {
   const { username, password, inviteCode } = await readBody(req);
   const name = String(username || '').trim();
   if (!/^[\w.\-áéíóúñÁÉÍÓÚÑ]{3,30}$/.test(name)) return fail(res, 400, 'El usuario debe tener entre 3 y 30 letras o números.');
-  if (String(password || '').length < 6) return fail(res, 400, 'La contraseña debe tener al menos 6 caracteres.');
+  const pwProblem = passwordProblem(password, name);
+  if (pwProblem) return fail(res, 400, pwProblem);
   if (D.settings.requireInvite && String(inviteCode || '').trim() !== D.settings.inviteCode) return fail(res, 403, 'El código de invitación no es correcto.');
   if (D.users.some((u) => u.username.toLowerCase() === name.toLowerCase())) return fail(res, 409, 'Ese usuario ya existe.');
   if (D.users.length && guard.count('reg:' + clientIp(req), 3, 24 * 3600 * 1000)) return fail(res, 429, 'Se han creado demasiadas cuentas desde esta conexión hoy.');
   const salt = crypto.randomBytes(16).toString('hex');
-  const user = { id: crypto.randomUUID(), username: name, salt, passHash: hashPass(password, salt), admin: ADMIN_USER ? name.toLowerCase() === ADMIN_USER : D.users.length === 0, createdAt: new Date().toISOString() };
+  const admin = ADMIN_USER ? name.toLowerCase() === ADMIN_USER : D.users.length === 0;
+  // Cuentas nuevas pendientes de aprobación del administrador (si está activado)
+  const approved = admin || D.settings.requireApproval === false;
+  const user = { id: crypto.randomUUID(), username: name, salt, passHash: hashPass(password, salt), admin, approved, createdAt: new Date().toISOString() };
   D.users.push(user); db.save();
+  logAccess(req, name, approved ? 'registro' : 'registro (pendiente)');
+  if (!approved) return send(res, 200, { pending: true });
   newSession(res, req, user);
   send(res, 200, publicUser(user));
 });
 
 route('POST', '/api/login', async (req, res) => {
   if (tooMany(req)) return fail(res, 429, 'Demasiados intentos. Espera unos minutos.');
-  const { username, password } = await readBody(req);
-  const u = D.users.find((x) => x.username.toLowerCase() === String(username || '').trim().toLowerCase());
-  if (!u || !crypto.timingSafeEqual(Buffer.from(hashPass(String(password || ''), u.salt), 'hex'), Buffer.from(u.passHash, 'hex'))) {
+  const { username, password, code } = await readBody(req);
+  const uname = String(username || '').trim().toLowerCase();
+  const lock = userFails.get(uname);
+  if (lock && lock.until > Date.now()) { logAccess(req, username, 'cuenta bloqueada'); return fail(res, 429, 'Demasiados intentos fallidos en esta cuenta. Espera 15 minutos.'); }
+  const u = D.users.find((x) => x.username.toLowerCase() === uname);
+  if (!u || !passOk(u, password)) {
+    const f = userFails.get(uname) || { n: 0, until: 0 };
+    if (++f.n >= 10) { f.until = Date.now() + 15 * 60 * 1000; f.n = 0; }
+    userFails.set(uname, f);
+    logAccess(req, username, 'contraseña incorrecta'); ipFail(req);
     return fail(res, 401, 'Usuario o contraseña incorrectos.');
   }
+  if (u.approved === false) { logAccess(req, u.username, 'pendiente de aprobación'); return fail(res, 403, 'Tu cuenta aún no ha sido aprobada por el administrador.'); }
+  if (u.totp && u.totp.enabled) {
+    if (!code) return send(res, 401, { need2fa: true, error: 'Escribe el código de tu app de autenticación.' });
+    if (!totpOk(u, code)) { logAccess(req, u.username, 'código 2FA incorrecto'); ipFail(req); return send(res, 401, { need2fa: true, error: 'El código no es correcto.' }); }
+  }
+  userFails.delete(uname);
   newSession(res, req, u);
+  logAccess(req, u.username, 'correcto');
   send(res, 200, publicUser(u));
 });
 
 route('POST', '/api/logout', (req, res) => {
-  const token = cookies(req).sid; if (token) { delete D.sessions[token]; db.save(); }
+  const ses = sessionOf(req); if (ses) { delete D.sessions[ses.key]; db.save(); }
   res.setHeader('Set-Cookie', 'sid=; Path=/; Max-Age=0');
   send(res, 200, { ok: true });
 });
@@ -360,9 +444,49 @@ route('GET', '/api/me', { auth: true }, (req, res, p, user) => send(res, 200, pu
 
 route('POST', '/api/password', { auth: true }, async (req, res, p, user) => {
   const { current, next } = await readBody(req);
-  if (hashPass(String(current || ''), user.salt) !== user.passHash) return fail(res, 401, 'La contraseña actual no es correcta.');
-  if (String(next || '').length < 6) return fail(res, 400, 'La nueva contraseña debe tener al menos 6 caracteres.');
-  user.salt = crypto.randomBytes(16).toString('hex'); user.passHash = hashPass(next, user.salt); db.save();
+  if (!passOk(user, current)) return fail(res, 401, 'La contraseña actual no es correcta.');
+  const problem = passwordProblem(next, user.username); if (problem) return fail(res, 400, problem);
+  user.salt = crypto.randomBytes(16).toString('hex'); user.passHash = hashPass(next, user.salt);
+  const mine = sessionOf(req);
+  for (const [k, s] of Object.entries(D.sessions)) if (s.userId === user.id && (!mine || k !== mine.key)) delete D.sessions[k];
+  db.save();
+  send(res, 200, { ok: true });
+});
+
+// Mis dispositivos conectados
+route('GET', '/api/sessions', { auth: true }, (req, res, p, user) => {
+  const mine = sessionOf(req);
+  send(res, 200, Object.entries(D.sessions).filter(([, s]) => s.userId === user.id)
+    .map(([k, s]) => ({ id: k.slice(2, 14), current: !!mine && k === mine.key, device: s.device || 'Dispositivo', ip: s.ip || '', last: s.last || s.created || null }))
+    .sort((a, b) => (b.current - a.current) || ((b.last || 0) - (a.last || 0))));
+});
+route('POST', '/api/sessions/logout-others', { auth: true }, (req, res, p, user) => {
+  const mine = sessionOf(req); let n = 0;
+  for (const [k, s] of Object.entries(D.sessions)) if (s.userId === user.id && (!mine || k !== mine.key)) { delete D.sessions[k]; n++; }
+  db.save(); send(res, 200, { closed: n });
+});
+
+// Verificación en dos pasos
+route('POST', '/api/2fa/setup', { auth: true }, (req, res, p, user) => {
+  if (user.totp && user.totp.enabled) return fail(res, 400, 'Ya está activada.');
+  const secret = b32enc(crypto.randomBytes(20));
+  user.totp = { secret, enabled: false };
+  db.save();
+  const issuer = encodeURIComponent(D.settings.siteName || cfg.siteName);
+  send(res, 200, { secret, url: `otpauth://totp/${issuer}:${encodeURIComponent(user.username)}?secret=${secret}&issuer=${issuer}&digits=6&period=30` });
+});
+route('POST', '/api/2fa/enable', { auth: true }, async (req, res, p, user) => {
+  const { code } = await readBody(req);
+  if (!user.totp || !user.totp.secret) return fail(res, 400, 'Primero genera la clave.');
+  if (!totpOk(user, code)) return fail(res, 400, 'El código no es correcto. Comprueba que la hora del móvil es la correcta.');
+  user.totp.enabled = true; db.save();
+  send(res, 200, { ok: true });
+});
+route('POST', '/api/2fa/disable', { auth: true }, async (req, res, p, user) => {
+  const { password, code } = await readBody(req);
+  if (!passOk(user, password)) return fail(res, 401, 'La contraseña no es correcta.');
+  if (user.totp && user.totp.enabled && !totpOk(user, code)) return fail(res, 401, 'El código no es correcto.');
+  delete user.totp; db.save();
   send(res, 200, { ok: true });
 });
 
@@ -648,19 +772,25 @@ route('PUT', '/api/admin/title/:id', { admin: true }, async (req, res, p) => {
   send(res, 200, view(t));
 });
 route('GET', '/api/admin/users', { admin: true }, (req, res) => {
-  send(res, 200, D.users.map((u) => ({ ...publicUser(u), createdAt: u.createdAt })));
+  send(res, 200, D.users.map((u) => ({ ...publicUser(u), createdAt: u.createdAt, approved: u.approved !== false, lastLogin: u.lastLogin || null,
+    devices: Object.values(D.sessions).filter((s) => s.userId === u.id).length })));
+});
+route('GET', '/api/admin/access-log', { admin: true }, (req, res) => {
+  send(res, 200, (D.accessLog || []).slice(0, 150).map((a) => ({ ...a, place: isPrivate(a.ip) ? 'red local' : geo.info.loaded ? (geo.allowed(a.ip) ? 'España' : 'fuera de España') : '' })));
 });
 route('POST', '/api/admin/users/:id', { admin: true }, async (req, res, p, me) => {
   const u = D.users.find((x) => x.id === p.id);
   if (!u) return fail(res, 404, 'No encontrado');
-  const { admin, password } = await readBody(req);
+  const { admin, password, approved, logout } = await readBody(req);
+  if (typeof approved === 'boolean') u.approved = approved;
+  if (logout || approved === false) for (const [k, s] of Object.entries(D.sessions)) if (s.userId === u.id) delete D.sessions[k];
   if (typeof admin === 'boolean' && ADMIN_USER) return fail(res, 400, 'El administrador está fijado en la configuración del servidor.');
   if (typeof admin === 'boolean') {
     if (u.id === me.id && !admin) return fail(res, 400, 'No puedes quitarte el rol de administrador a ti mismo.');
     u.admin = admin;
   }
   if (password) {
-    if (String(password).length < 6) return fail(res, 400, 'Mínimo 6 caracteres.');
+    const problem = passwordProblem(password, u.username); if (problem) return fail(res, 400, problem);
     u.salt = crypto.randomBytes(16).toString('hex'); u.passHash = hashPass(String(password), u.salt);
     for (const [k, s] of Object.entries(D.sessions)) if (s.userId === u.id) delete D.sessions[k];
   }
@@ -678,11 +808,12 @@ route('DELETE', '/api/admin/users/:id', { admin: true }, (req, res, p, me) => {
 route('GET', '/api/admin/settings', { admin: true }, (req, res) => {
   const myIp = clientIp(req);
   const myIpStatus = isPrivate(myIp) ? 'red local' : !geo.info.loaded ? 'sin comprobar' : geo.allowed(myIp) ? 'España' : 'fuera de España';
-  send(res, 200, { security: { countries: GEO_COUNTRIES, geo: geo.info, ...guard.stats, bannedNow: guard.bans.size, myIp, myIpStatus }, adminFixed: !!ADMIN_USER, inviteCode: D.settings.inviteCode, requireInvite: !!D.settings.requireInvite, siteName: D.settings.siteName || cfg.siteName, storage: cfg.storage, remote: cfg.remote, libraryPath: cfg.libraryPath, sections: D.sections || [], moviesPath: cfg.moviesPath, seriesPath: cfg.seriesPath, tmdb: !!cfg.tmdbApiKey, lastScan: D.lastScan });
+  send(res, 200, { security: { countries: GEO_COUNTRIES, geo: geo.info, ...guard.stats, bannedNow: guard.bans.size, myIp, myIpStatus }, adminFixed: !!ADMIN_USER, inviteCode: D.settings.inviteCode, requireInvite: !!D.settings.requireInvite, requireApproval: D.settings.requireApproval !== false, pending: D.users.filter((u) => u.approved === false).length, siteName: D.settings.siteName || cfg.siteName, storage: cfg.storage, remote: cfg.remote, libraryPath: cfg.libraryPath, sections: D.sections || [], moviesPath: cfg.moviesPath, seriesPath: cfg.seriesPath, tmdb: !!cfg.tmdbApiKey, lastScan: D.lastScan });
 });
 route('PUT', '/api/admin/settings', { admin: true }, async (req, res) => {
-  const { inviteCode, siteName, requireInvite } = await readBody(req);
+  const { inviteCode, siteName, requireInvite, requireApproval } = await readBody(req);
   if (requireInvite !== undefined) D.settings.requireInvite = !!requireInvite;
+  if (requireApproval !== undefined) D.settings.requireApproval = !!requireApproval;
   if (inviteCode !== undefined) { if (String(inviteCode).trim().length < 4) return fail(res, 400, 'El código debe tener al menos 4 caracteres.'); D.settings.inviteCode = String(inviteCode).trim(); }
   if (siteName !== undefined) D.settings.siteName = String(siteName).trim().slice(0, 40) || undefined;
   db.save();
@@ -745,6 +876,10 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   if (security(req, res, url)) return;
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    const origin = req.headers.origin || req.headers.referer;
+    if (origin) { let h = ''; try { h = new URL(origin).host; } catch {} if (h !== req.headers.host) return fail(res, 403, 'Petición no permitida.'); }
+  }
   try {
     for (const r of routes) {
       if (r.method !== req.method) continue;
