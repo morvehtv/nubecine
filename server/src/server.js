@@ -147,7 +147,19 @@ function currentUser(req) {
   if (u && !userAllowed(u.username)) { delete D.sessions[ses.key]; db.save(); return null; } // ya no tiene acceso
   return u && u.approved === false ? null : u;
 }
-const publicUser = (u) => ({ id: u.id, username: u.username, admin: !!u.admin, twoFactor: !!(u.totp && u.totp.enabled) });
+// Llave de vídeo (12 h) para el reproductor del iPhone, que a veces no envía la cookie
+if (!D.settings.mediaSecret) { D.settings.mediaSecret = crypto.randomBytes(32).toString('hex'); db.save(); }
+const mediaSig = (uid, exp) => crypto.createHmac('sha256', D.settings.mediaSecret).update(`${uid}.${exp}`).digest('base64url').slice(0, 32);
+const mediaKey = (u) => { const exp = Math.floor(Date.now() / 1000) + 12 * 3600; return `${u.id}.${exp}.${mediaSig(u.id, exp)}`; };
+function userFromMediaKey(k) {
+  const [uid, exp, sig] = String(k || '').split('.');
+  if (!uid || !exp || !sig || Number(exp) < Date.now() / 1000) return null;
+  const good = mediaSig(uid, exp);
+  if (sig.length !== good.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(good))) return null;
+  const u = D.users.find((x) => x.id === uid);
+  return u && u.approved !== false && userAllowed(u.username) ? u : null;
+}
+const publicUser = (u) => ({ id: u.id, username: u.username, admin: !!u.admin, twoFactor: !!(u.totp && u.totp.enabled), mediaKey: mediaKey(u) });
 
 // Contraseñas: mínimo 8 caracteres y que no sea de las típicas
 const COMMON_PW = new Set(['12345678', '123456789', '1234567890', 'password', 'password1', 'contraseña', 'qwertyui', 'qwerty123', '11111111', '00000000', '12341234', 'abcd1234', 'iloveyou', 'aaaaaaaa', 'abc12345', 'admin123', 'administrador', 'teamo123', 'barcelona', 'realmadrid', 'netflix1', 'pelicula', 'peliculas', '87654321', 'zxcvbnm1', 'asdfghjk', '1q2w3e4r', 'passw0rd']);
@@ -711,7 +723,9 @@ function probeKeyframe(f, t) {
     });
   });
 }
-route('GET', '/hls/:fileId/index.m3u8', { auth: true }, async (req, res, p, user) => {
+route('GET', '/hls/:fileId/index.m3u8', async (req, res, p) => {
+  const user = currentUser(req) || userFromMediaKey(new URL(req.url, 'http://x').searchParams.get('k'));
+  if (!user) return fail(res, 401, 'Inicia sesión');
   const f = D.files[p.fileId];
   if (!f || f.kind !== 'video') return fail(res, 404, 'No encontrado');
   const m = (D.media || {})[p.fileId] || null;
@@ -726,7 +740,7 @@ route('GET', '/hls/:fileId/index.m3u8', { auth: true }, async (req, res, p, user
     const n = m && m.pref != null ? m.pref : 0;
     let vmode = iosVideoOk(m) ? 'copy' : 'h264';
     if (vmode === 'h264' && transcodes >= MAX_TRANSCODES) return fail(res, 503, 'El servidor está convirtiendo demasiados vídeos a la vez.');
-    sid = crypto.randomBytes(8).toString('hex');
+    sid = crypto.randomBytes(16).toString('hex');
     const dir = path.join(HLS_DIR, sid);
     fs.mkdirSync(dir, { recursive: true });
     const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-rw_timeout', '30000000',
@@ -745,20 +759,31 @@ route('GET', '/hls/:fileId/index.m3u8', { auth: true }, async (req, res, p, user
   }
   const h = hlsSessions.get(sid);
   h.last = Date.now();
-  // Espera a que exista la lista con al menos un fragmento (máx. 25 s)
-  const list = path.join(h.dir, 'index.m3u8');
-  for (let i = 0; i < 100 && !(fs.existsSync(list) && /\.m4s/.test(fs.readFileSync(list, 'utf8'))); i++) await new Promise((r) => setTimeout(r, 250));
-  if (!fs.existsSync(list)) return fail(res, 504, 'No se pudo preparar el vídeo');
-  const body = fs.readFileSync(list, 'utf8').replace(/^(init\.mp4|seg\d+\.m4s)$/gm, `/hls/s/${sid}/$1`).replace(/URI="init\.mp4"/, `URI="/hls/s/${sid}/init.mp4"`);
-  send(res, 200, body, { 'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'no-store', 'X-Start': String(h.start) });
+  // Lista "maestra" que apunta a la lista de esta sesión. El reproductor de iPhone vuelve a pedir
+  // la lista de la sesión (no esta), así que no se reinicia la conversión en cada recarga.
+  send(res, 200, `#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\n/hls/s/${sid}/index.m3u8\n`,
+    { 'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'no-store', 'X-Start': String(h.start) });
 });
-route('GET', '/hls/s/:sid/:file', { auth: true }, (req, res, p, user) => {
+// Archivos de una sesión HLS. El identificador de sesión (aleatorio, 128 bits) hace de llave:
+// así funciona aunque el reproductor del sistema no envíe la cookie.
+route('GET', '/hls/s/:sid/:file', async (req, res, p) => {
   const h = hlsSessions.get(p.sid);
-  if (!h || h.userId !== user.id || !/^(init\.mp4|seg\d+\.m4s)$/.test(p.file)) return fail(res, 404, 'No encontrado');
+  if (!h || !/^(index\.m3u8|init\.mp4|seg\d+\.m4s)$/.test(p.file)) return fail(res, 404, 'No encontrado');
   h.last = Date.now();
+  if (p.file === 'index.m3u8') {
+    // Espera a que exista la lista con al menos un fragmento (máx. 40 s)
+    const list = path.join(h.dir, 'index.m3u8');
+    for (let i = 0; i < 160 && !(fs.existsSync(list) && /\.m4s/.test(fs.readFileSync(list, 'utf8'))); i++) {
+      if (h.ff.exitCode != null && !fs.existsSync(list)) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!fs.existsSync(list)) { log('HLS: no se pudo preparar', h.fileId, h.ff.exitCode != null ? '(ffmpeg terminó)' : '(tiempo agotado)'); return fail(res, 504, 'No se pudo preparar el vídeo'); }
+    const body = fs.readFileSync(list, 'utf8').replace(/^(seg\d+\.m4s)$/gm, `/hls/s/${p.sid}/$1`).replace(/URI="init\.mp4"/, `URI="/hls/s/${p.sid}/init.mp4"`);
+    return send(res, 200, body, { 'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'no-store' });
+  }
   const file = path.join(h.dir, p.file);
   if (!fs.existsSync(file)) return fail(res, 404, 'Aún no disponible');
-  res.writeHead(200, { 'Content-Type': p.file.endsWith('.mp4') ? 'video/mp4' : 'video/iso.segment', 'Content-Length': fs.statSync(file).size, 'Cache-Control': 'private, max-age=3600' });
+  res.writeHead(200, { ...SEC_HEADERS, 'Cross-Origin-Resource-Policy': 'cross-origin', 'Content-Type': p.file.endsWith('.mp4') ? 'video/mp4' : 'video/iso.segment', 'Content-Length': fs.statSync(file).size, 'Cache-Control': 'private, no-store' });
   fs.createReadStream(file).pipe(res);
 });
 // Desde qué segundo empieza la sesión HLS (para guardar bien el progreso)

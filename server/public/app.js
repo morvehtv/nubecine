@@ -597,7 +597,9 @@ function playIPhone(fileId) {
   const fromStart = !!state.fromStart; state.fromStart = false;
   const v = document.createElement('video');
   v.id = 'ios-video'; v.preload = 'auto';
-  v.src = `/hls/${encodeURIComponent(fileId)}/index.m3u8${fromStart ? '?inicio=1&nueva=1' : ''}`;
+  const qs = new URLSearchParams(); if (fromStart) { qs.set('inicio', '1'); qs.set('nueva', '1'); }
+  if (state.me && state.me.mediaKey) qs.set('k', state.me.mediaKey);
+  v.src = `/hls/${encodeURIComponent(fileId)}/index.m3u8${qs.toString() ? '?' + qs : ''}`;
   v.setAttribute('x-webkit-airplay', 'allow');
   v.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
   document.body.appendChild(v);
