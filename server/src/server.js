@@ -350,11 +350,17 @@ setInterval(() => {
 }, 15000).unref();
 
 let scanning = null;
-async function scan() {
+// Huella de la lista de archivos: si no cambia, no hace falta rehacer el catálogo
+let lastSig = '';
+const sigOf = (all) => crypto.createHash('sha1').update(all.map((f) => `${f.path}|${f.size}|${f.mtime}`).sort().join('\n')).digest('hex');
+async function scan(force = true) {
   if (scanning) return scanning;
   scanning = (async () => {
     const t0 = Date.now();
     const all = await storage.list(cfg.libraryPath);
+    const sig = sigOf(all);
+    if (!force && sig === lastSig) return D.lastScan; // nada nuevo en la nube
+    lastSig = sig;
     const before = new Set(Object.keys(D.titles));
     const fresh = buildLibrary(all, cfg.libraryPath);
     D.titles = mergeCatalog(D.titles, fresh.titles);
@@ -947,7 +953,13 @@ if (require.main === module) {
     // Primer escaneo (reintenta mientras rclone arranca)
     const first = (n = 0) => scan().catch((e) => { log('Escaneo inicial falló:', e.message); if (n < 10) setTimeout(() => first(n + 1), 15000); });
     setTimeout(first, 1500);
-    if (cfg.autoScanMinutes > 0) setInterval(() => scan().catch((e) => log('Escaneo falló:', e.message)), cfg.autoScanMinutes * 60000);
+    // Vigila la nube cada pocos segundos (AUTO_SCAN_SECONDS, 10 por defecto) y solo rehace el catálogo si algo cambió
+    const every = Number(process.env.AUTO_SCAN_SECONDS) || (Number(process.env.AUTO_SCAN_MINUTES) === 0 ? 0 : 10);
+    if (every > 0) {
+      let errs = 0;
+      setInterval(() => scan(false).then(() => { errs = 0; }).catch((e) => { if (errs++ % 30 === 0) log('Escaneo falló:', e.message); }), Math.max(5, every) * 1000);
+      log(`Contenido nuevo: se detecta en unos ${Math.max(5, every)} segundos`);
+    }
   });
   const bye = () => { db.flush(); process.exit(0); };
   process.on('SIGINT', bye); process.on('SIGTERM', bye);
