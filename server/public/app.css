@@ -126,7 +126,8 @@ body.bar-hidden #topbar { transform: translateY(-105%); }
 
 /* ---------- Filas ---------- */
 .row { margin: 18px 0 26px; }
-.row h2 { font-size: 19px; margin: 0 var(--pad) 12px; letter-spacing: -.01em; }
+.row h2 { font-size: 19px; margin: 0 var(--pad) 12px; letter-spacing: -.01em; display: flex; align-items: baseline; gap: 12px; }
+.see-all { font-size: 14px; font-weight: 600; color: var(--accent); margin-left: auto; padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
 .row-track { display: flex; gap: 10px; overflow-x: auto; padding: 6px var(--pad) 14px; scroll-padding: 0 var(--pad); scrollbar-width: none; }
 .row-track::-webkit-scrollbar { display: none; }
 
