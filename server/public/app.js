@@ -400,7 +400,6 @@ async function renderHome() {
       <a class="btn focusable" href="#/t/${hero.id}">Más información</a>`) +
     rowHTML('Seguir viendo', c.continue, (x) => cardHTML(x, { wide: true, play: true, progress: x, sub: x.saga ? `Película ${x.episode}` : x.type === 'series' ? `T${x.season} · E${x.episode}` : fmtTime(x.d - x.t) + ' restantes' })) +
     rowHTML('Mi lista', c.mylist, (x) => cardHTML(x)) +
-    rowHTML('Añadido recientemente', recent.slice(0, 20), (x) => cardHTML(x)) +
     // 6 novedades de cada categoría (lo último añadido), con enlace a la categoría completa
     c.sections.map((s) => rowHTML(`Novedades en ${s.name}`, recent.filter((x) => x.section === s.id).slice(0, 6), (x) => cardHTML(x), secHref(s))).join('');
   autofocus('#hero-play');
