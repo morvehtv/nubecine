@@ -7,6 +7,8 @@ services:
     env_file: .env
     environment:
       RCLONE_CONFIG: /config/rclone.conf
+      # Nombres de Jottacloud tal cual (admite ":", "?"…)
+      RCLONE_JOTTACLOUD_ENCODING: Slash,Del,Ctl,InvalidUtf8,Dot
       DATA_FILE: /app/data/db.json
     volumes:
       - ./rclone:/config          # aquí va rclone.conf (con tu cuenta de Jottacloud)
