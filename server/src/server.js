@@ -43,6 +43,10 @@ if (!cfg.libraryPath) cfg.libraryPath = cfg.moviesPath.split('/').slice(0, -1).j
 const db = new DB(path.resolve(ROOT, cfg.dataFile));
 const storage = createStorage({ ...cfg, localPath: path.resolve(ROOT, cfg.localPath) });
 const D = db.data;
+// Web privada: solo estos usuarios pueden entrar (se cambia en Admin → Ajustes o con ALLOWED_USERS en .env)
+if (process.env.ALLOWED_USERS !== undefined) D.settings.allowedUsers = process.env.ALLOWED_USERS.split(/[,\s]+/).filter(Boolean);
+else if (!Array.isArray(D.settings.allowedUsers)) D.settings.allowedUsers = ['Jairobiix', 'luci88ct'];
+const userAllowed = (name) => { const l = D.settings.allowedUsers || []; return !l.length || l.some((x) => x.toLowerCase() === String(name || '').toLowerCase()); };
 if (D.settings.requireApproval !== true) for (const u of D.users || []) if (u.approved === false) u.approved = true;
 // Administrador fijo: si ADMIN_USER está definido, solo ese usuario es administrador
 const ADMIN_USER = String(process.env.ADMIN_USER || cfg.adminUser || '').trim().toLowerCase();
@@ -140,6 +144,7 @@ function currentUser(req) {
   const ses = sessionOf(req);
   if (!ses) return null;
   const u = D.users.find((x) => x.id === ses.s.userId) || null;
+  if (u && !userAllowed(u.username)) { delete D.sessions[ses.key]; db.save(); return null; } // ya no tiene acceso
   return u && u.approved === false ? null : u;
 }
 const publicUser = (u) => ({ id: u.id, username: u.username, admin: !!u.admin, twoFactor: !!(u.totp && u.totp.enabled) });
@@ -396,6 +401,7 @@ route('POST', '/api/register', async (req, res) => {
   const pwProblem = passwordProblem(password, name);
   if (pwProblem) return fail(res, 400, pwProblem);
   if (D.settings.requireInvite && String(inviteCode || '').trim() !== D.settings.inviteCode) return fail(res, 403, 'El código de invitación no es correcto.');
+  if (!userAllowed(name)) { logAccess(req, name, 'registro rechazado (web privada)'); ipFail(req); return fail(res, 403, 'Esta web es privada. No se pueden crear cuentas nuevas.'); }
   if (D.users.some((u) => u.username.toLowerCase() === name.toLowerCase())) return fail(res, 409, 'Ese usuario ya existe.');
   if (D.users.length && guard.count('reg:' + clientIp(req), 3, 24 * 3600 * 1000)) return fail(res, 429, 'Se han creado demasiadas cuentas desde esta conexión hoy.');
   const salt = crypto.randomBytes(16).toString('hex');
@@ -417,7 +423,7 @@ route('POST', '/api/login', async (req, res) => {
   const lock = userFails.get(uname);
   if (lock && lock.until > Date.now()) { logAccess(req, username, 'cuenta bloqueada'); return fail(res, 429, 'Demasiados intentos fallidos en esta cuenta. Espera 15 minutos.'); }
   const u = D.users.find((x) => x.username.toLowerCase() === uname);
-  if (!u || !passOk(u, password)) {
+  if (!u || !passOk(u, password) || !userAllowed(u.username)) {
     const f = userFails.get(uname) || { n: 0, until: 0 };
     if (++f.n >= 10) { f.until = Date.now() + 15 * 60 * 1000; f.n = 0; }
     userFails.set(uname, f);
@@ -817,10 +823,15 @@ route('DELETE', '/api/admin/users/:id', { admin: true }, (req, res, p, me) => {
 route('GET', '/api/admin/settings', { admin: true }, (req, res) => {
   const myIp = clientIp(req);
   const myIpStatus = isPrivate(myIp) ? 'red local' : !geo.info.loaded ? 'sin comprobar' : geo.allowed(myIp) ? 'España' : 'fuera de España';
-  send(res, 200, { security: { countries: GEO_COUNTRIES, geo: geo.info, ...guard.stats, bannedNow: guard.bans.size, myIp, myIpStatus }, adminFixed: !!ADMIN_USER, inviteCode: D.settings.inviteCode, requireInvite: !!D.settings.requireInvite, requireApproval: D.settings.requireApproval === true, pending: D.users.filter((u) => u.approved === false).length, siteName: D.settings.siteName || cfg.siteName, storage: cfg.storage, remote: cfg.remote, libraryPath: cfg.libraryPath, sections: D.sections || [], moviesPath: cfg.moviesPath, seriesPath: cfg.seriesPath, tmdb: !!cfg.tmdbApiKey, lastScan: D.lastScan });
+  send(res, 200, { security: { countries: GEO_COUNTRIES, geo: geo.info, ...guard.stats, bannedNow: guard.bans.size, myIp, myIpStatus }, adminFixed: !!ADMIN_USER, inviteCode: D.settings.inviteCode, requireInvite: !!D.settings.requireInvite, requireApproval: D.settings.requireApproval === true, allowedUsers: D.settings.allowedUsers || [], allowedFromEnv: process.env.ALLOWED_USERS !== undefined, pending: D.users.filter((u) => u.approved === false).length, siteName: D.settings.siteName || cfg.siteName, storage: cfg.storage, remote: cfg.remote, libraryPath: cfg.libraryPath, sections: D.sections || [], moviesPath: cfg.moviesPath, seriesPath: cfg.seriesPath, tmdb: !!cfg.tmdbApiKey, lastScan: D.lastScan });
 });
 route('PUT', '/api/admin/settings', { admin: true }, async (req, res) => {
-  const { inviteCode, siteName, requireInvite, requireApproval } = await readBody(req);
+  const { inviteCode, siteName, requireInvite, requireApproval, allowedUsers } = await readBody(req);
+  if (allowedUsers !== undefined) {
+    const list = (Array.isArray(allowedUsers) ? allowedUsers : String(allowedUsers).split(/[,\s]+/)).map((x) => String(x).trim()).filter(Boolean).slice(0, 100);
+    if (ADMIN_USER && list.length && !list.some((x) => x.toLowerCase() === ADMIN_USER)) list.unshift(D.users.find((u) => u.username.toLowerCase() === ADMIN_USER)?.username || ADMIN_USER);
+    D.settings.allowedUsers = list;
+  }
   if (requireInvite !== undefined) D.settings.requireInvite = !!requireInvite;
   if (requireApproval !== undefined) D.settings.requireApproval = !!requireApproval;
   if (inviteCode !== undefined) { if (String(inviteCode).trim().length < 4) return fail(res, 400, 'El código debe tener al menos 4 caracteres.'); D.settings.inviteCode = String(inviteCode).trim(); }

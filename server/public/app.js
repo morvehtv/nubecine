@@ -1116,6 +1116,8 @@ async function renderAdmin(tabArg) {
     const s = await api('/api/admin/settings');
     body.innerHTML = `<form class="panel" id="sf" style="max-width:560px"><h3>General</h3><p>&nbsp;</p>
         <div class="field"><label>Nombre de la web</label><input class="input focusable" name="siteName" value="${esc(s.siteName)}"></div>
+        <div class="field"><label>Usuarios con acceso (web privada)</label><input class="input focusable" name="allowedUsers" value="${esc((s.allowedUsers || []).join(', '))}" ${s.allowedFromEnv ? 'disabled' : ''} placeholder="Vacío = cualquiera con cuenta">
+          <small style="color:var(--muted)">Solo estos usuarios pueden entrar y ver el contenido, separados por comas. Nadie más puede crear cuenta.${s.allowedFromEnv ? ' (Fijado en el archivo .env del servidor)' : ''}</small></div>
         <label style="display:flex;gap:8px;align-items:center;margin:4px 0 8px"><input type="checkbox" class="focusable" name="requireApproval" ${s.requireApproval ? 'checked' : ''}> Aprobar a mano las cuentas nuevas</label>
         <label style="display:flex;gap:8px;align-items:center;margin:4px 0 12px"><input type="checkbox" class="focusable" name="requireInvite" ${s.requireInvite ? 'checked' : ''}> Pedir código de invitación para registrarse</label>
         <div class="field"><label>Código de invitación</label><input class="input focusable" name="inviteCode" value="${esc(s.inviteCode)}"></div>
