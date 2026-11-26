@@ -884,7 +884,13 @@ function serveStatic(req, res, pathname) {
   if (!file.startsWith(PUBLIC)) return fail(res, 403, 'Prohibido');
   if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(PUBLIC, 'index.html');
   const ext = path.extname(file);
-  res.writeHead(200, { ...SEC_HEADERS, 'Content-Type': STATIC_MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+  // ETag: si el archivo no ha cambiado, el navegador usa su copia (respuesta vacía 304, carga instantánea)
+  const st = fs.statSync(file);
+  const etag = `"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+  const cache = /\.(png|svg|ico)$/.test(ext) ? 'public, max-age=604800' : 'no-cache';
+  if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ...SEC_HEADERS, ETag: etag, 'Cache-Control': cache }); return res.end(); }
+  res.writeHead(200, { ...SEC_HEADERS, 'Content-Type': STATIC_MIME[ext] || 'application/octet-stream', 'Cache-Control': cache, ETag: etag, 'Content-Length': st.size });
+  if (req.method === 'HEAD') return res.end();
   fs.createReadStream(file).pipe(res);
 }
 

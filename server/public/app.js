@@ -58,11 +58,22 @@ function placeholder(title) {
   const a = h % 360, b = (a + 40) % 360;
   return `<div class="placeholder" style="background:linear-gradient(160deg,hsl(${a} 45% 28%),hsl(${b} 55% 12%))">${esc(title)}</div>`;
 }
-function posterHTML(t, wide) {
-  const src = wide ? (t.backdrop || t.poster) : t.poster;
-  return src ? `<img loading="lazy" src="${esc(src)}" alt="" onerror="this.outerHTML=window.__ph(this.dataset.t)" data-t="${esc(t.title)}">` : placeholder(t.title);
+// Imágenes de TMDB al tamaño justo (más ligeras en móvil)
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+function tmdb(url, kind) {
+  if (!url || !/image\.tmdb\.org\/t\/p\//.test(url)) return url;
+  const w = kind === 'backdrop' ? (innerWidth * DPR > 1400 ? 'w1280' : 'w780') : (DPR < 1.5 ? 'w185' : 'w342');
+  return url.replace(/\/t\/p\/(w\d+|original)\//, `/t/p/${w}/`);
 }
-window.__ph = (t) => placeholder(t);
+function posterHTML(t, wide) {
+  const src = wide ? (t.backdrop ? tmdb(t.backdrop, 'backdrop') : tmdb(t.poster, 'poster')) : tmdb(t.poster, 'poster');
+  return src ? `<img loading="lazy" decoding="async" src="${esc(src)}" alt="" data-t="${esc(t.title)}">` : placeholder(t.title);
+}
+// Si una imagen no carga, se pone el póster de reserva (sin código en línea: lo prohíbe la política de seguridad)
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (img && img.tagName === 'IMG' && img.dataset && img.dataset.t != null) img.outerHTML = placeholder(img.dataset.t);
+}, true);
 
 function cardHTML(t, opts = {}) {
   const wide = !!opts.wide;
@@ -354,7 +365,7 @@ function renderAuth(mode) {
 
 // ---------------- Inicio ----------------
 function heroHTML(t, buttons) {
-  const bg = t.backdrop || t.poster;
+  const bg = t.backdrop ? tmdb(t.backdrop, 'backdrop') : tmdb(t.poster, 'backdrop');
   return `<section class="hero">
     <div class="hero-bg" style="${bg ? `background-image:url('${esc(bg)}')` : 'background:linear-gradient(120deg,#2a2112,#0d1220)'}"></div>
     <div class="hero-content">
