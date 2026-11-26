@@ -44,6 +44,8 @@ class MainActivity : Activity() {
         if (isTv) requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         window.decorView.setBackgroundColor(Color.parseColor("#0A0C10"))
 
+        // La dirección antigua por IP pasa a la nueva con HTTPS (cine.morvehtv.com)
+        if (prefs.getString("url", "")?.contains("94.143.140.93") == true) prefs.edit().remove("url").apply()
         val saved = prefs.getString("url", null)
         val url = saved ?: BuildConfig.SERVER_URL.takeIf { it.isNotBlank() }
         if (url == null) askForServer() else openWeb(url)

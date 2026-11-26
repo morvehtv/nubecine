@@ -19,7 +19,7 @@ permissions:
   contents: write
 
 env:
-  SERVER_URL: ${{ github.event.inputs.server_url || 'http://94.143.140.93:8090' }}
+  SERVER_URL: ${{ github.event.inputs.server_url || 'https://cine.morvehtv.com' }}
 
 jobs:
   build:
