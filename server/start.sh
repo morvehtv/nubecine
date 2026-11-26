@@ -3,6 +3,9 @@
 cd "$(dirname "$0")"
 
 if [ "${STORAGE:-rclone}" != "local" ]; then
+  # Jottacloud admite caracteres como ":" o "?" en los nombres (p. ej. "Star Wars: Episodio I").
+  # Por defecto rclone los sustituye por otros al pedir el archivo y no lo encuentra: se usan tal cual.
+  export RCLONE_JOTTACLOUD_ENCODING="${RCLONE_JOTTACLOUD_ENCODING:-Slash,Del,Ctl,InvalidUtf8,Dot}"
   if [ -n "$RCLONE_CONFIG" ] && [ ! -f "$RCLONE_CONFIG" ]; then
     echo "AVISO: falta la configuración de rclone en $RCLONE_CONFIG."
     echo "La web arranca igualmente, pero no verá vídeos hasta que conectes Jottacloud (ver README, paso 2)."
