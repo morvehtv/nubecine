@@ -61,7 +61,8 @@ const SEC_HEADERS = {
   'X-Robots-Tag': 'noindex, nofollow, noarchive',  // que no aparezca en buscadores
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
   'Cross-Origin-Opener-Policy': 'same-origin',
-  'Content-Security-Policy': "default-src 'self'; img-src 'self' https: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
+  'Cross-Origin-Resource-Policy': 'same-origin',
+  'Content-Security-Policy': "default-src 'self'; img-src 'self' https: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
 };
 function send(res, status, body, headers = {}) {
   const isJson = typeof body !== 'string' && !Buffer.isBuffer(body);
@@ -98,6 +99,12 @@ function clientIp(req) {
   }
   return direct;
 }
+// País que indica Cloudflare (más preciso que la base de datos propia). Solo si la petición llega por el túnel.
+function cfCountry(req) {
+  if (TRUST_PROXY !== 'cloudflare' || !isPrivate(normalizeIp(req.socket.remoteAddress))) return '';
+  const c = String(req.headers['cf-ipcountry'] || '').toUpperCase();
+  return /^[A-Z][A-Z0-9]$/.test(c) && c !== 'XX' ? c : '';
+}
 
 // ---------- Usuarios y sesiones ----------
 const hashPass = (pw, salt) => crypto.scryptSync(pw, salt, 64).toString('hex');
@@ -115,7 +122,7 @@ function newSession(res, req, user) {
   D.sessions[tokenKey(token)] = { userId: user.id, expires: now + 1000 * 60 * 60 * 24 * 60, created: now, last: now, ip: clientIp(req), device: deviceName(req.headers['user-agent']) };
   user.lastLogin = { at: new Date().toISOString(), ip: clientIp(req) };
   db.save();
-  res.setHeader('Set-Cookie', `sid=${token}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 60}; SameSite=Lax${isHttps(req) ? '; Secure' : ''}`);
+  res.setHeader('Set-Cookie', `sid=${token}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 60}; SameSite=Strict${isHttps(req) ? '; Secure' : ''}`);
 }
 function sessionOf(req) {
   const token = cookies(req).sid || (req.headers.authorization || '').replace(/^Bearer /, '');
@@ -124,7 +131,8 @@ function sessionOf(req) {
   if (!D.sessions[key] && D.sessions[token]) { D.sessions[key] = D.sessions[token]; delete D.sessions[token]; db.save(); } // sesiones antiguas
   const s = D.sessions[key];
   if (!s) return null;
-  if (s.expires < Date.now()) { delete D.sessions[key]; db.save(); return null; }
+  // Caduca a los 60 días, o antes si el aparato lleva 30 días sin usarse
+  if (s.expires < Date.now() || Date.now() - (s.last || s.created || 0) > 30 * 24 * 3600 * 1000) { delete D.sessions[key]; db.save(); return null; }
   if (Date.now() - (s.last || 0) > 10 * 60 * 1000) { s.last = Date.now(); s.ip = clientIp(req); db.save(); }
   return { key, s };
 }
@@ -839,6 +847,7 @@ const GEO_COUNTRIES = (process.env.GEO_COUNTRIES ?? cfg.geoCountries ?? 'ES').to
 const geo = new GeoDB(path.join(path.dirname(path.resolve(ROOT, cfg.dataFile)), 'geo'), GEO_COUNTRIES, log);
 const guard = new Guard();
 const SCANNER = /\.(php|asp|aspx|jsp|cgi|env|git|sql|bak|ini)(\/|$|\?)|\/wp-|\/wordpress|phpmyadmin|\/\.well-known\/(?!acme)|\/(admin|login)\.|\/cgi-bin|\/vendor\/|\/\.(git|env|aws|ssh)/i;
+const ATTACK_UA = /sqlmap|nikto|nmap|masscan|zgrab|nuclei|wpscan|dirbuster|gobuster|feroxbuster|ffuf|acunetix|nessus|openvas|hydra|jaeles|whatweb|commix|xsstrike/i;
 function blockedPage(res, status, title, msg) {
   res.writeHead(status, { ...SEC_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${title}</title>
@@ -854,8 +863,16 @@ function security(req, res, url) {
     if (guard.count('scan:' + ip, 5, 10 * 60 * 1000)) { guard.ban(ip, 3600 * 1000); log('IP bloqueada por rastreo:', ip); }
     res.writeHead(404, SEC_HEADERS); res.end(); return true;
   }
+  // Herramientas de ataque conocidas (por su identificación): bloqueo inmediato de 1 día
+  if (ATTACK_UA.test(req.headers['user-agent'] || '')) {
+    guard.ban(ip, 24 * 3600 * 1000); log('IP bloqueada (herramienta de ataque):', ip);
+    res.writeHead(403, SEC_HEADERS); res.end(); return true;
+  }
   // Solo desde los países permitidos (España). Las IPs de la red local siempre pueden entrar.
-  if (GEO_COUNTRIES.length && geo.info.loaded && !isPrivate(ip) && !geo.allowed(ip)) {
+  // Por el túnel de Cloudflare se usa el país que da Cloudflare (y se bloquea la red Tor, "T1").
+  const cc = cfCountry(req);
+  const geoBlocked = GEO_COUNTRIES.length && !isPrivate(ip) && (cc ? !GEO_COUNTRIES.includes(cc) : (geo.info.loaded && !geo.allowed(ip)));
+  if (geoBlocked) {
     guard.stats.geoBlocked++;
     const name = D.settings.siteName || cfg.siteName;
     if (url.pathname.startsWith('/api/')) fail(res, 403, `${name} solo está disponible en España.`);

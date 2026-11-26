@@ -16,6 +16,16 @@ services:
       - ./server/public:/app/public:ro   # la web se actualiza sin reiniciar
     expose:
       - "3000"
+    # Contenedor con los mínimos permisos: si alguien lograra entrar, no podría escalar privilegios
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    pids_limit: 512
 
   caddy:
     # Solo se arranca con --profile https (VPS con los puertos 80/443 libres)
